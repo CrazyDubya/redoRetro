@@ -98,6 +98,11 @@ class Business:
     cash: float = 0.0
     employees: list[str] = field(default_factory=list)
     production_rates: dict[str, float] = field(default_factory=dict)
+    advertising: float = 0.0
+    price_markup: dict[str, float] = field(default_factory=dict)
+    market_share: dict[str, float] = field(default_factory=dict)
+    debt: float = 0.0
+    research: float = 0.0
 
 
 @dataclass
@@ -109,6 +114,20 @@ class JobOpening:
     start_hour: int
     end_hour: int
     qualification: str | None = None
+
+
+@dataclass
+class Contract:
+    id: str
+    seller_id: str
+    buyer_id: str
+    good_type_id: str
+    quantity: float
+    unit_price: float
+    origin_id: str
+    destination_id: str
+    due_day: int
+    status: str = "open"
 
 
 @dataclass(frozen=True)
@@ -200,6 +219,7 @@ class World:
         self.actors: dict[str, Actor] = {}
         self.businesses: dict[str, Business] = {}
         self.job_openings: dict[str, JobOpening] = {}
+        self.contracts: dict[str, Contract] = {}
         self.markets: dict[str, Market] = {}
         self.observations: dict[str, Observation] = {}
         self.statements: dict[str, Statement] = {}
@@ -221,6 +241,7 @@ class World:
             Actor: self.actors,
             Business: self.businesses,
             JobOpening: self.job_openings,
+            Contract: self.contracts,
             Market: self.markets,
             Observation: self.observations,
             Statement: self.statements,
