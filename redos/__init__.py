@@ -12,6 +12,7 @@ from .model import (
     World,
 )
 from .rules import Rule, RuleBook
+from .vertical import SliceState, build_integrated_world, run_autonomous_days
 
 __all__ = [
     "Actor",
@@ -25,4 +26,7 @@ __all__ = [
     "World",
     "Rule",
     "RuleBook",
+    "SliceState",
+    "build_integrated_world",
+    "run_autonomous_days",
 ]
