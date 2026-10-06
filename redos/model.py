@@ -75,10 +75,13 @@ class Actor:
     debt: float = 0.0
     health: float = 1.0
     intention: str | None = None
-    knowledge: dict[str, str] = field(default_factory=dict)
+    knowledge: dict[str, Any] = field(default_factory=dict)
     beliefs: dict[str, str] = field(default_factory=dict)
     trust: dict[str, float] = field(default_factory=dict)
     relationships: dict[str, float] = field(default_factory=dict)
+    schedule: list[ScheduleEntry] = field(default_factory=list)
+    current_activity: str | None = None
+    schedule_override_until: datetime | None = None
 
 
 @dataclass
@@ -90,6 +93,48 @@ class Business:
     cash: float = 0.0
     employees: list[str] = field(default_factory=list)
     production_rates: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ScheduleEntry:
+    start_hour: int
+    end_hour: int
+    activity: str
+    target_location_id: str
+    priority: int = 0
+    interruptible: bool = True
+
+
+@dataclass
+class Observation:
+    id: str
+    witness_id: str
+    event_id: str
+    observed_at: datetime
+    content: str
+    confidence: float = 1.0
+    recollection: str | None = None
+
+
+@dataclass
+class Statement:
+    id: str
+    speaker_id: str
+    listener_id: str
+    proposition: str
+    content: str
+    truthful: bool
+    at: datetime
+
+
+@dataclass
+class EnvironmentCell:
+    id: str
+    location_id: str
+    state: str
+    fuel: float = 0.0
+    moisture: float = 0.0
+    neighbors: tuple[str, ...] = ()
 
 
 @dataclass
@@ -128,9 +173,14 @@ class World:
         self.actors: dict[str, Actor] = {}
         self.businesses: dict[str, Business] = {}
         self.markets: dict[str, Market] = {}
+        self.observations: dict[str, Observation] = {}
+        self.statements: dict[str, Statement] = {}
+        self.environment_cells: dict[str, EnvironmentCell] = {}
         self.events: list[CausalEvent] = []
         self._event_number = 0
         self._lot_number = 0
+        self._observation_number = 0
+        self._statement_number = 0
 
     def add(self, entity: Any) -> Any:
         collection = {
@@ -142,6 +192,9 @@ class World:
             Actor: self.actors,
             Business: self.businesses,
             Market: self.markets,
+            Observation: self.observations,
+            Statement: self.statements,
+            EnvironmentCell: self.environment_cells,
         }.get(type(entity))
         if collection is None:
             raise TypeError(f"unsupported world entity: {type(entity)!r}")
@@ -266,6 +319,37 @@ class World:
             data={"quantity": quantity, "good_type_id": good_type_id},
         )
         return new_lots
+
+    def consume_goods(
+        self,
+        holder_id: str,
+        good_type_id: str,
+        quantity: float,
+        *,
+        causes: Iterable[str] = (),
+        reason: str = "goods consumed",
+    ) -> list[str]:
+        if quantity <= 0:
+            raise ValueError("consumption quantity must be positive")
+        if self.quantity_held(holder_id, good_type_id) + 1e-9 < quantity:
+            raise ValueError(f"{holder_id} does not hold enough {good_type_id}")
+        remaining = quantity
+        consumed: list[str] = []
+        for lot in list(self.lots_held_by(holder_id, good_type_id)):
+            used = min(remaining, lot.quantity)
+            lot.quantity -= used
+            consumed.append(lot.id)
+            remaining -= used
+            if remaining <= 1e-9:
+                break
+        self.record(
+            "consumption",
+            reason,
+            entities=[holder_id, good_type_id, *consumed],
+            causes=causes,
+            data={"quantity": quantity, "good_type_id": good_type_id},
+        )
+        return consumed
 
     def move_actor(self, actor_id: str, destination_id: str, *, causes: Iterable[str] = (), reason: str = "actor moved") -> CausalEvent:
         actor = self.actors[actor_id]
