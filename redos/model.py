@@ -85,6 +85,8 @@ class Actor:
     traveling_to: str | None = None
     travel_remaining_days: int = 0
     travel_remaining_hours: int = 0
+    temporary_activity: str | None = None
+    temporary_target_location_id: str | None = None
 
 
 @dataclass
@@ -96,6 +98,17 @@ class Business:
     cash: float = 0.0
     employees: list[str] = field(default_factory=list)
     production_rates: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass
+class JobOpening:
+    id: str
+    employer_id: str
+    occupation: str
+    wage_per_day: float
+    start_hour: int
+    end_hour: int
+    qualification: str | None = None
 
 
 @dataclass(frozen=True)
@@ -186,6 +199,7 @@ class World:
         self.households: dict[str, Household] = {}
         self.actors: dict[str, Actor] = {}
         self.businesses: dict[str, Business] = {}
+        self.job_openings: dict[str, JobOpening] = {}
         self.markets: dict[str, Market] = {}
         self.observations: dict[str, Observation] = {}
         self.statements: dict[str, Statement] = {}
@@ -206,6 +220,7 @@ class World:
             Household: self.households,
             Actor: self.actors,
             Business: self.businesses,
+            JobOpening: self.job_openings,
             Market: self.markets,
             Observation: self.observations,
             Statement: self.statements,
@@ -262,6 +277,8 @@ class World:
             return self.businesses[holder_id].location_id
         if holder_id in self.places:
             return holder_id
+        if holder_id in self.households:
+            return self.households[holder_id].residence_id
         raise KeyError(f"unknown holder {holder_id!r}")
 
     def lots_held_by(self, holder_id: str, good_type_id: str | None = None) -> list[InventoryLot]:

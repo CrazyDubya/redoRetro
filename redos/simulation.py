@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Iterable
 
 from .living import activity_for_hour
@@ -67,6 +68,21 @@ def tick(world: World, hours: int = 1) -> None:
             if actor.travel_remaining_hours <= 0:
                 _finish_travel(world, actor)
             continue
+        if actor.schedule_override_until is not None and world.now < actor.schedule_override_until:
+            activity = actor.temporary_activity
+            target = actor.temporary_target_location_id
+            if activity is None or target is None:
+                continue
+            actor.current_activity = activity
+            actor.intention = activity
+            if actor.location_id != target:
+                _start_next_leg(world, actor, target)
+            else:
+                world.record("activity", f"{actor.id} continued interrupted {activity}", actors=[actor.id], entities=[target])
+            continue
+        actor.schedule_override_until = None
+        actor.temporary_activity = None
+        actor.temporary_target_location_id = None
         entry = activity_for_hour(world, actor.id)
         if entry is None:
             actor.current_activity = None
@@ -78,6 +94,17 @@ def tick(world: World, hours: int = 1) -> None:
             _start_next_leg(world, actor, entry.target_location_id)
         else:
             world.record("activity", f"{actor.id} began {entry.activity}", actors=[actor.id], entities=[entry.target_location_id])
+
+
+def interrupt(world: World, actor_id: str, activity: str, target_location_id: str, *, hours: int, reason: str) -> None:
+    if hours <= 0:
+        raise ValueError("an interruption must last at least one hour")
+    actor = world.actors[actor_id]
+    actor.schedule_override_until = world.now + timedelta(hours=hours)
+    actor.temporary_activity = activity
+    actor.temporary_target_location_id = target_location_id
+    actor.intention = activity
+    world.record("schedule_interrupted", f"{actor_id} interrupted schedule for {activity}", actors=[actor_id], entities=[target_location_id], data={"reason": reason, "hours": hours})
 
 
 def run_days(world: World, days: int) -> None:

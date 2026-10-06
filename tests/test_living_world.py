@@ -3,7 +3,9 @@ import unittest
 from redos.bootstrap import build_tiny_world
 from redos.living import witness_event
 from redos.model import Actor, AggregatePopulation, ScheduleEntry
-from redos.simulation import add_aggregate_population, ask_about, reconcile_population, run_days, tick
+from redos.employment import age_one_year, charge_household_expense, hire, pay_wages
+from redos.simulation import add_aggregate_population, ask_about, interrupt, reconcile_population, run_days, tick
+from redos.model import Business, JobOpening
 
 
 class LivingWorldTests(unittest.TestCase):
@@ -37,6 +39,22 @@ class LivingWorldTests(unittest.TestCase):
         self.assertEqual(actor.traveling_to, "north")
         tick(world, 48)
         self.assertEqual(actor.location_id, "north")
+
+    def test_job_wages_expenses_and_interruption_change_the_same_actor(self) -> None:
+        world = build_tiny_world()
+        world.actors["merchant"].skills["trade"] = 1
+        world.add(JobOpening("shopkeeper-job", "shop-market-cashier", "shopkeeper", 50, 8, 16, "trade"))
+        hire(world, "merchant", "shopkeeper-job")
+        starting_cash = world.actors["merchant"].money
+        pay_wages(world, "shop-market-cashier")
+        self.assertEqual(world.actors["merchant"].money, starting_cash + 50)
+        charge_household_expense(world, "merchant", 10, expense="rent")
+        self.assertEqual(world.actors["merchant"].money, starting_cash + 40)
+        age_one_year(world, "merchant")
+        self.assertEqual(world.actors["merchant"].age, 32)
+        interrupt(world, "merchant", "visit sick daughter", "tavern", hours=2, reason="daughter became ill")
+        tick(world, 1)
+        self.assertEqual(world.actors["merchant"].current_activity, "visit sick daughter")
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from .market import create_star_market, install_star_goods
-from .model import Actor, Business, Household, Place, Route, World
+from .model import Actor, Business, GoodType, Household, Place, Route, ScheduleEntry, World
 
 
 def build_tiny_world() -> World:
@@ -40,4 +40,51 @@ def build_tiny_world() -> World:
     world.households["merchant-household"].members.append("merchant")
     world.add(Actor("cooper", "Thomas", "workshop", age=42, occupation="cooper", employer_id="workshop-business", money=120.0))
     world.businesses["workshop-business"].employees.append("cooper")
+    return world
+
+
+def build_micro_world() -> World:
+    """Build the first architecture-test block: 12 persistent people."""
+    world = build_tiny_world()
+    world.add(Place("home-a", "Household A", 1))
+    world.add(Place("home-b", "Household B", 1))
+    world.add(Place("home-c", "Household C", 1))
+    world.add(Place("vessel", "Small vessel", 1))
+    for route in (
+        Route("home-a-tavern", "home-a", "tavern", 0.2, 1),
+        Route("home-b-shop", "home-b", "shop", 0.2, 1),
+        Route("home-c-workshop", "home-c", "workshop", 0.2, 1),
+    ):
+        world.add(route)
+    for good_id, name, price in (("grain", "Grain", 4.0), ("flour", "Flour", 8.0), ("bread", "Bread", 12.0), ("vessel", "Small vessel", 500.0)):
+        world.add(GoodType(good_id, name, price))
+    world.create_lot("grain", 100, holder_id="warehouse-business", owner_id="warehouse-business", provenance=("harvest",))
+    world.create_lot("vessel", 1, holder_id="dock", owner_id="warehouse-business", provenance=("shipwright",))
+    households = (
+        Household("household-a", "A family", "home-a", cash=500),
+        Household("household-b", "B family", "home-b", cash=500),
+        Household("household-c", "C family", "home-c", cash=500),
+    )
+    for household in households:
+        world.add(household)
+    for index in range(12):
+        household_id = households[index // 4].id
+        residence = households[index // 4].residence_id
+        workplace = ("shop", "workshop", "tavern")[index % 3]
+        actor = Actor(
+            f"citizen-{index}",
+            f"Citizen {index}",
+            residence,
+            age=18 + index,
+            household_id=household_id,
+            occupation=("shopkeeper", "cooper", "server")[index % 3],
+            money=100.0,
+            schedule=[
+                ScheduleEntry(0, 7, "sleep", residence),
+                ScheduleEntry(8, 16, "work", workplace, priority=10, interruptible=False),
+                ScheduleEntry(18, 22, "visit tavern", "tavern"),
+            ],
+        )
+        world.add(actor)
+        households[index // 4].members.append(actor.id)
     return world
