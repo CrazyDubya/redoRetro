@@ -82,6 +82,9 @@ class Actor:
     schedule: list[ScheduleEntry] = field(default_factory=list)
     current_activity: str | None = None
     schedule_override_until: datetime | None = None
+    traveling_to: str | None = None
+    travel_remaining_days: int = 0
+    travel_remaining_hours: int = 0
 
 
 @dataclass
@@ -138,6 +141,17 @@ class EnvironmentCell:
 
 
 @dataclass
+class AggregatePopulation:
+    id: str
+    place_id: str
+    population: int
+    food: float
+    labor: float
+    development: float = 0.0
+    resolved_households: int = 0
+
+
+@dataclass
 class Market:
     id: str
     place_id: str
@@ -176,6 +190,7 @@ class World:
         self.observations: dict[str, Observation] = {}
         self.statements: dict[str, Statement] = {}
         self.environment_cells: dict[str, EnvironmentCell] = {}
+        self.aggregate_populations: dict[str, AggregatePopulation] = {}
         self.events: list[CausalEvent] = []
         self._event_number = 0
         self._lot_number = 0
@@ -195,6 +210,7 @@ class World:
             Observation: self.observations,
             Statement: self.statements,
             EnvironmentCell: self.environment_cells,
+            AggregatePopulation: self.aggregate_populations,
         }.get(type(entity))
         if collection is None:
             raise TypeError(f"unsupported world entity: {type(entity)!r}")
@@ -233,6 +249,11 @@ class World:
         if days < 0:
             raise ValueError("time cannot move backwards")
         self.now += timedelta(days=days)
+
+    def advance_hours(self, hours: int = 1) -> None:
+        if hours < 0:
+            raise ValueError("time cannot move backwards")
+        self.now += timedelta(hours=hours)
 
     def location_of(self, holder_id: str) -> str:
         if holder_id in self.actors:
