@@ -19,6 +19,9 @@ class Place:
     development_level: int = 1
     parent_id: str | None = None
     exits: dict[str, str] = field(default_factory=dict)
+    x: float = 0.0
+    y: float = 0.0
+    is_interior: bool = False
 
 
 @dataclass
@@ -59,6 +62,7 @@ class Household:
     members: list[str] = field(default_factory=list)
     cash: float = 0.0
     debt: float = 0.0
+    daily_expenses: float = 0.0
 
 
 @dataclass
@@ -67,6 +71,8 @@ class Actor:
     name: str
     location_id: str
     age: int = 20
+    developmental_stage: str = "adult"
+    life_events: list[str] = field(default_factory=list)
     household_id: str | None = None
     occupation: str | None = None
     employer_id: str | None = None
@@ -87,6 +93,8 @@ class Actor:
     travel_remaining_hours: int = 0
     temporary_activity: str | None = None
     temporary_target_location_id: str | None = None
+    is_player: bool = False
+    position: tuple[float, float] | None = None
 
 
 @dataclass
@@ -173,6 +181,18 @@ class EnvironmentCell:
 
 
 @dataclass
+class Movement:
+    id: str
+    actor_id: str
+    route_id: str
+    origin_id: str
+    destination_id: str
+    elapsed_hours: float
+    duration_hours: float
+    progress: float = 0.0
+
+
+@dataclass
 class AggregatePopulation:
     id: str
     place_id: str
@@ -191,6 +211,8 @@ class Market:
     balances: dict[str, float] = field(default_factory=dict)
     production_rates: dict[str, float] = field(default_factory=dict)
     demand_rates: dict[str, float] = field(default_factory=dict)
+    demand_backlog: dict[str, float] = field(default_factory=dict)
+    price_history: dict[str, list[float]] = field(default_factory=dict)
     last_updated_day: int = 0
 
 
@@ -225,9 +247,12 @@ class World:
         self.statements: dict[str, Statement] = {}
         self.environment_cells: dict[str, EnvironmentCell] = {}
         self.aggregate_populations: dict[str, AggregatePopulation] = {}
+        self.movements: dict[str, Movement] = {}
         self.events: list[CausalEvent] = []
         self._event_number = 0
         self._lot_number = 0
+        self._lot_original_quantity: dict[str, float] = {}
+        self._lot_counts_as_creation: dict[str, bool] = {}
         self._observation_number = 0
         self._statement_number = 0
 
@@ -247,6 +272,7 @@ class World:
             Statement: self.statements,
             EnvironmentCell: self.environment_cells,
             AggregatePopulation: self.aggregate_populations,
+            Movement: self.movements,
         }.get(type(entity))
         if collection is None:
             raise TypeError(f"unsupported world entity: {type(entity)!r}")
@@ -302,6 +328,13 @@ class World:
             return self.households[holder_id].residence_id
         raise KeyError(f"unknown holder {holder_id!r}")
 
+    def position_of(self, holder_id: str) -> tuple[float, float]:
+        if holder_id in self.actors and self.actors[holder_id].position is not None:
+            return self.actors[holder_id].position  # type: ignore[return-value]
+        place_id = self.location_of(holder_id)
+        place = self.places[place_id]
+        return (place.x, place.y)
+
     def lots_held_by(self, holder_id: str, good_type_id: str | None = None) -> list[InventoryLot]:
         return [
             lot for lot in self.lots.values()
@@ -320,6 +353,7 @@ class World:
         holder_id: str,
         owner_id: str | None = None,
         provenance: Iterable[str] = (),
+        counts_as_creation: bool = True,
     ) -> InventoryLot:
         if quantity <= 0:
             raise ValueError("lot quantity must be positive")
@@ -336,6 +370,8 @@ class World:
             created_at=self.now,
         )
         self.lots[lot.id] = lot
+        self._lot_original_quantity[lot.id] = quantity
+        self._lot_counts_as_creation[lot.id] = counts_as_creation
         return lot
 
     def transfer_goods(
@@ -365,6 +401,7 @@ class World:
                 holder_id=to_holder,
                 owner_id=to_owner or to_holder,
                 provenance=(*lot.provenance, lot.id),
+                counts_as_creation=False,
             )
             new_lots.append(new_lot)
             remaining -= moved
@@ -414,6 +451,8 @@ class World:
         actor = self.actors[actor_id]
         origin = actor.location_id
         actor.location_id = destination_id
+        destination = self.places[destination_id]
+        actor.position = (destination.x, destination.y)
         return self.record(
             "movement",
             reason,
@@ -422,11 +461,58 @@ class World:
             causes=causes,
         )
 
+    def begin_movement(self, actor_id: str, route_id: str) -> Movement:
+        actor = self.actors[actor_id]
+        route = self.routes[route_id]
+        if actor.traveling_to is not None:
+            raise ValueError(f"{actor_id} is already moving")
+        if actor.location_id != route.origin_id:
+            raise ValueError(f"route {route_id} does not start at {actor.location_id}")
+        origin = self.places[route.origin_id]
+        actor.position = (origin.x, origin.y)
+        self._event_number += 1
+        movement = Movement(
+            id=f"movement-{self._event_number}",
+            actor_id=actor_id,
+            route_id=route_id,
+            origin_id=route.origin_id,
+            destination_id=route.destination_id,
+            elapsed_hours=0.0,
+            duration_hours=max(1.0, route.travel_days * 24.0),
+        )
+        self.movements[movement.id] = movement
+        actor.traveling_to = route.destination_id
+        actor.travel_remaining_hours = int(movement.duration_hours)
+        return movement
+
+    def advance_movements(self, hours: float) -> list[str]:
+        if hours < 0:
+            raise ValueError("movement time cannot move backwards")
+        arrived: list[str] = []
+        for movement_id, movement in list(self.movements.items()):
+            movement.elapsed_hours += hours
+            movement.progress = min(1.0, movement.elapsed_hours / movement.duration_hours)
+            actor = self.actors[movement.actor_id]
+            origin = self.places[movement.origin_id]
+            destination = self.places[movement.destination_id]
+            actor.position = (
+                origin.x + (destination.x - origin.x) * movement.progress,
+                origin.y + (destination.y - origin.y) * movement.progress,
+            )
+            actor.travel_remaining_hours = max(0, int(movement.duration_hours - movement.elapsed_hours))
+            if movement.progress >= 1.0:
+                self.move_actor(actor.id, movement.destination_id, reason=f"arrived via {movement.route_id}")
+                actor.traveling_to = None
+                actor.travel_remaining_hours = 0
+                del self.movements[movement_id]
+                arrived.append(actor.id)
+        return arrived
+
     def pay(self, payer_id: str, payee_id: str, amount: float, *, causes: Iterable[str] = (), reason: str = "payment") -> CausalEvent:
         if amount < 0:
             raise ValueError("payment cannot be negative")
-        payer = self.actors.get(payer_id) or self.businesses.get(payer_id)
-        payee = self.actors.get(payee_id) or self.businesses.get(payee_id)
+        payer = self.actors.get(payer_id) or self.businesses.get(payer_id) or self.households.get(payer_id)
+        payee = self.actors.get(payee_id) or self.businesses.get(payee_id) or self.households.get(payee_id)
         if payer is None or payee is None:
             raise KeyError("money must move between an actor or business")
         money_field = "money" if isinstance(payer, Actor) else "cash"

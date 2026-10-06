@@ -24,13 +24,16 @@ class Recipe:
 def produce(world: World, business_id: str, recipe: Recipe, *, causes: Iterable[str] = ()) -> str:
     """Consume physical inputs and create a traceable output lot."""
     consumed: list[str] = []
+    consumption_causes: list[str] = []
     for good_id, quantity in recipe.inputs.items():
+        event_count = len(world.events)
         consumed.extend(world.consume_goods(business_id, good_id, quantity, causes=causes, reason=f"{recipe.id} input consumed"))
+        consumption_causes.extend(event.id for event in world.events[event_count:])
     event = world.record(
         "production",
         f"{business_id} produced {recipe.output_quantity} {recipe.output_good_id}",
         entities=[business_id, recipe.id, recipe.output_good_id],
-        causes=[*causes, *consumed],
+        causes=[*causes, *consumption_causes],
         data={"inputs": recipe.inputs, "quantity": recipe.output_quantity},
     )
     world.create_lot(recipe.output_good_id, recipe.output_quantity, holder_id=business_id, owner_id=business_id, provenance=(event.id, *consumed))
@@ -105,6 +108,44 @@ def tell(
         data={"truthful": truthful, "content": content},
     )
     return statement
+
+
+def propagate_information(world: World, *, proposition: str, location_id: str) -> list[Statement]:
+    """Move information one social hop among people physically present."""
+    present = [actor for actor in world.actors.values() if actor.location_id == location_id and actor.traveling_to is None]
+    statements: list[Statement] = []
+    for speaker in present:
+        if proposition not in speaker.beliefs:
+            continue
+        content = speaker.beliefs[proposition]
+        source_truth = next(
+            (statement.truthful for statement in reversed(world.statements.values()) if statement.proposition == proposition and statement.listener_id == speaker.id),
+            True,
+        )
+        for listener in present:
+            if listener.id == speaker.id or listener.beliefs.get(proposition) == content or proposition in listener.knowledge:
+                continue
+            statement = tell(
+                world,
+                speaker.id,
+                listener.id,
+                proposition,
+                content,
+                truthful=source_truth,
+                trust_delta=(listener.trust.get(speaker.id, 0.5) - 0.5) * 0.1,
+            )
+            statements.append(statement)
+    return statements
+
+
+def meet(world: World, first_id: str, second_id: str, *, location_id: str) -> None:
+    first = world.actors[first_id]
+    second = world.actors[second_id]
+    if first.location_id != location_id or second.location_id != location_id:
+        raise ValueError("both actors must be at the meeting place")
+    first.relationships[second_id] = min(1.0, first.relationships.get(second_id, 0.0) + 0.05)
+    second.relationships[first_id] = min(1.0, second.relationships.get(first_id, 0.0) + 0.05)
+    world.record("meeting", f"{first_id} met {second_id}", actors=[first_id, second_id], entities=[location_id])
 
 
 def add_environment_cell(world: World, cell: EnvironmentCell) -> None:

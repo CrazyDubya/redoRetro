@@ -39,19 +39,28 @@ def pay_wages(world: World, employer_id: str, *, days: int = 1) -> float:
 def charge_household_expense(world: World, actor_id: str, amount: float, *, expense: str, payee_id: str | None = None) -> None:
     actor = world.actors[actor_id]
     household = world.households.get(actor.household_id or "")
-    if household is not None:
-        household.debt += amount if actor.money < amount else 0.0
-    if payee_id is not None and actor.money >= amount:
-        world.pay(actor_id, payee_id, amount, reason=f"household expense: {expense}")
-    elif actor.money >= amount:
-        actor.money -= amount
-        world.record("expense", f"{actor_id} paid {expense}", actors=[actor_id], data={"amount": amount})
+    payer_id = household.id if household is not None and household.cash >= amount else actor_id
+    payer = household if payer_id == household.id else actor
+    available = household.cash if household is not None and payer_id == household.id else actor.money
+    if payee_id is not None and available >= amount:
+        world.pay(payer_id, payee_id, amount, reason=f"household expense: {expense}")
+    elif available >= amount:
+        if household is not None and payer_id == household.id:
+            household.cash -= amount
+        else:
+            actor.money -= amount
+        world.record("expense", f"{payer_id} paid {expense}", actors=[actor_id], entities=[payer_id], data={"amount": amount})
     else:
-        actor.debt += amount
-        world.record("debt", f"{actor_id} missed {expense}", actors=[actor_id], data={"amount": amount})
+        if household is not None:
+            household.debt += amount
+        else:
+            actor.debt += amount
+        world.record("debt", f"{payer_id} missed {expense}", actors=[actor_id], entities=[payer_id], data={"amount": amount})
 
 
 def age_one_year(world: World, actor_id: str) -> None:
     actor = world.actors[actor_id]
     actor.age += 1
-    world.record("birthday", f"{actor_id} turned {actor.age}", actors=[actor_id], data={"age": actor.age})
+    actor.developmental_stage = "child" if actor.age < 14 else "youth" if actor.age < 18 else "adult" if actor.age < 60 else "elder"
+    actor.life_events.append(f"turned {actor.age}")
+    world.record("birthday", f"{actor_id} turned {actor.age}", actors=[actor_id], data={"age": actor.age, "stage": actor.developmental_stage})

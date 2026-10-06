@@ -11,3 +11,6 @@ python -m unittest discover -s tests -v
 ```
 
 The package has no runtime dependencies.
+
+The integrated Milestone 1 fixture and its acceptance evidence are documented
+in [docs/acceptance/milestone-1.md](docs/acceptance/milestone-1.md).

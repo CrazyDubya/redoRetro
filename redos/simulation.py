@@ -29,30 +29,29 @@ def route_path(world: World, origin_id: str, destination_id: str) -> list[Route]
     return []
 
 
+def walk(world: World, actor_id: str, destination_id: str):
+    """Start embodied movement for either a player or an autonomous actor."""
+    actor = world.actors[actor_id]
+    path = route_path(world, actor.location_id, destination_id)
+    if not path:
+        raise ValueError(f"no walkable path from {actor.location_id} to {destination_id}")
+    return world.begin_movement(actor_id, path[0].id)
+
+
 def _start_next_leg(world: World, actor: Actor, target_id: str) -> bool:
     path = route_path(world, actor.location_id, target_id)
     if not path:
         return False
     route = path[0]
-    actor.traveling_to = route.destination_id
-    actor.travel_remaining_hours = max(1, route.travel_days * 24)
+    movement = world.begin_movement(actor.id, route.id)
     world.record(
         "travel_started",
         f"{actor.id} started travelling toward {target_id}",
         actors=[actor.id],
         entities=[route.id, route.destination_id],
-        data={"travel_hours": actor.travel_remaining_hours},
+        data={"travel_hours": movement.duration_hours, "distance": route.distance},
     )
     return True
-
-
-def _finish_travel(world: World, actor: Actor) -> None:
-    destination = actor.traveling_to
-    if destination is None:
-        return
-    world.move_actor(actor.id, destination, reason="autonomous actor arrived")
-    actor.traveling_to = None
-    actor.travel_remaining_hours = 0
 
 
 def tick(world: World, hours: int = 1) -> None:
@@ -62,11 +61,9 @@ def tick(world: World, hours: int = 1) -> None:
     if hours == 0:
         return
     world.advance_hours(hours)
+    world.advance_movements(hours)
     for actor in world.actors.values():
         if actor.traveling_to is not None:
-            actor.travel_remaining_hours -= hours
-            if actor.travel_remaining_hours <= 0:
-                _finish_travel(world, actor)
             continue
         if actor.schedule_override_until is not None and world.now < actor.schedule_override_until:
             activity = actor.temporary_activity

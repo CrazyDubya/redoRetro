@@ -4,7 +4,7 @@ from redos.bootstrap import build_tiny_world
 from redos.living import witness_event
 from redos.model import Actor, AggregatePopulation, ScheduleEntry
 from redos.employment import age_one_year, charge_household_expense, hire, pay_wages
-from redos.simulation import add_aggregate_population, ask_about, interrupt, reconcile_population, run_days, tick
+from redos.simulation import add_aggregate_population, ask_about, interrupt, reconcile_population, run_days, tick, walk
 from redos.model import Business, JobOpening
 
 
@@ -49,12 +49,32 @@ class LivingWorldTests(unittest.TestCase):
         pay_wages(world, "shop-market-cashier")
         self.assertEqual(world.actors["merchant"].money, starting_cash + 50)
         charge_household_expense(world, "merchant", 10, expense="rent")
-        self.assertEqual(world.actors["merchant"].money, starting_cash + 40)
+        self.assertEqual(world.actors["merchant"].money, starting_cash + 50)
+        self.assertEqual(world.households["merchant-household"].cash, 90)
         age_one_year(world, "merchant")
         self.assertEqual(world.actors["merchant"].age, 32)
         interrupt(world, "merchant", "visit sick daughter", "tavern", hours=2, reason="daughter became ill")
         tick(world, 1)
         self.assertEqual(world.actors["merchant"].current_activity, "visit sick daughter")
+
+    def test_player_and_npc_share_continuous_spatial_movement(self) -> None:
+        world = build_tiny_world()
+        player = Actor("player", "Player", "tavern", is_player=True)
+        npc = Actor("npc", "NPC", "tavern")
+        world.places["tavern"].x = 0
+        world.places["shop"].x = 10
+        world.routes["tavern-shop"].travel_days = 0
+        world.add(player)
+        world.add(npc)
+        walk(world, "player", "shop")
+        self.assertEqual(player.location_id, "tavern")
+        self.assertEqual(player.position, (0, 0))
+        tick(world, 0.5)
+        self.assertEqual(player.location_id, "tavern")
+        self.assertEqual(player.position, (5.0, 0.0))
+        tick(world, 0.5)
+        self.assertEqual(player.location_id, "shop")
+        self.assertEqual(player.position, (10, 0))
 
 
 if __name__ == "__main__":

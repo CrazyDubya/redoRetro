@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import ceil
 from typing import Iterable
 
 from .model import Actor, GoodType, Market, Place, Route, World
@@ -76,6 +75,8 @@ def create_star_market(world: World, market_id: str, place_id: str, *, developme
         market.production_rates[good_id] = max(0.0, rate)
         market.demand_rates[good_id] = max(0.0, -rate)
         market.balances[good_id] = rate * 12.0
+        market.demand_backlog[good_id] = 0.0
+        market.price_history[good_id] = []
     world.add(market)
     seed_market_inventory(world, market.id)
     refresh_market(world, market.id)
@@ -91,7 +92,7 @@ def seed_market_inventory(world: World, market_id: str) -> None:
 
 def _market_price(world: World, market: Market, good_type_id: str) -> float:
     base = market.fixed_prices[good_type_id]
-    balance = market.balances.get(good_type_id, 0.0)
+    balance = market.balances.get(good_type_id, 0.0) - market.demand_backlog.get(good_type_id, 0.0)
     rate = abs(market.production_rates.get(good_type_id, 0.0)) + abs(market.demand_rates.get(good_type_id, 0.0))
     if rate == 0:
         return base
@@ -114,13 +115,24 @@ def refresh_market(world: World, market_id: str, *, days: int = 1) -> None:
     if days < 0:
         raise ValueError("days cannot be negative")
     for good_id in market.balances:
-        market.balances[good_id] += (market.production_rates.get(good_id, 0.0) - market.demand_rates.get(good_id, 0.0)) * days
+        production = market.production_rates.get(good_id, 0.0) * days
+        demand = market.demand_rates.get(good_id, 0.0) * days
+        market.balances[good_id] += production - demand
+        market.demand_backlog[good_id] = max(0.0, market.demand_backlog.get(good_id, 0.0) + demand - production)
+        market.price_history.setdefault(good_id, []).append(_market_price(world, market, good_id))
     market.last_updated_day += days
     # New production is physical canonical inventory, not an abstract market
     # number.  Demand consumes that stock only when a transaction occurs.
     for good_id, rate in market.production_rates.items():
         if rate > 0:
-            world.create_lot(good_id, rate * days, holder_id=market.place_id, owner_id=market.place_id, provenance=(f"production:{market.id}",))
+            quantity = rate * days
+            production_event = world.record(
+                "market_production",
+                f"{market.id} produced {quantity} {good_id}",
+                entities=[market.id, good_id],
+                data={"quantity": quantity},
+            )
+            world.create_lot(good_id, quantity, holder_id=market.place_id, owner_id=market.place_id, provenance=(production_event.id,))
     world.record("market_refresh", f"{market.id} refreshed for {days} day(s)", entities=[market_id])
 
 
