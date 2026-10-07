@@ -6,8 +6,8 @@ from .market import create_star_market, install_star_goods
 from .model import Actor, Business, GoodType, Household, Place, Route, ScheduleEntry, World
 
 
-def build_tiny_world() -> World:
-    world = World()
+def build_tiny_world(*, seed: int = 0) -> World:
+    world = World(seed=seed)
     for place in (
         Place("tavern", "The Red Lantern", 2),
         Place("cellar", "Tavern cellar", 2, parent_id="tavern"),
@@ -25,6 +25,8 @@ def build_tiny_world() -> World:
         Route("north-south", "north", "south", 3.0, 3),
         Route("south-north", "south", "north", 3.0, 3),
         Route("shop-tavern", "shop", "tavern", 0.4, 1),
+        Route("shop-warehouse", "shop", "warehouse", 0.8, 1),
+        Route("warehouse-shop", "warehouse", "shop", 0.8, 1),
     )
     for route in routes:
         world.add(route)
@@ -43,9 +45,9 @@ def build_tiny_world() -> World:
     return world
 
 
-def build_micro_world() -> World:
+def build_micro_world(*, seed: int = 0) -> World:
     """Build the first architecture-test block: 12 persistent people."""
-    world = build_tiny_world()
+    world = build_tiny_world(seed=seed)
     world.add(Place("home-a", "Household A", 1))
     world.add(Place("home-b", "Household B", 1))
     world.add(Place("home-c", "Household C", 1))

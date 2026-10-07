@@ -49,6 +49,17 @@ def conservation_errors(world: World, tolerance: float = 1e-6) -> list[str]:
     ]
 
 
+def market_balance_errors(world: World, tolerance: float = 1e-6) -> list[str]:
+    """Verify that published market balances equal physical place stock."""
+    errors: list[str] = []
+    for market in world.markets.values():
+        for good_id, balance in market.balances.items():
+            physical = world.quantity_held(market.place_id, good_id)
+            if abs(balance - physical) > tolerance:
+                errors.append(f"{market.id}:{good_id} balance {balance} != physical {physical}")
+    return errors
+
+
 def validate_world(world: World) -> list[str]:
     errors: list[str] = []
     for lot in world.lots.values():
@@ -63,6 +74,13 @@ def validate_world(world: World) -> list[str]:
             errors.append(f"actor {actor.id} is unhealthy")
         if actor.money < -1e-9:
             errors.append(f"actor {actor.id} has negative cash")
+    for business in world.businesses.values():
+        if business.cash < -1e-9:
+            errors.append(f"business {business.id} has negative cash")
+    for household in world.households.values():
+        if household.cash < -1e-9:
+            errors.append(f"household {household.id} has negative cash")
+    errors.extend(market_balance_errors(world))
     return errors
 
 
@@ -95,7 +113,11 @@ def tavern_report(world: World, tavern_id: str) -> list[dict[str, Any]]:
         if actor.location_id != tavern_id:
             continue
         known = []
+        seen_observations: set[str] = set()
         for observation_id in actor.knowledge.values():
+            if observation_id in seen_observations:
+                continue
+            seen_observations.add(observation_id)
             observation = world.observations.get(observation_id)
             if observation is not None:
                 known.append({"event": observation.event_id, "content": observation.recollection or observation.content, "confidence": observation.confidence})
@@ -107,11 +129,20 @@ def tavern_report(world: World, tavern_id: str) -> list[dict[str, Any]]:
             for statement in world.statements.values()
             if statement.listener_id == actor.id
         ]
+        latest_arrival = next(
+            (event for event in reversed(world.events) if event.kind == "movement" and actor.id in event.actors and event.entities and event.entities[-1] == tavern_id),
+            None,
+        )
+        why_here = actor.current_activity or actor.intention
+        if why_here is None and latest_arrival is not None:
+            why_here = f"arrived from {latest_arrival.entities[0]} through canonical movement"
+        if why_here is None:
+            why_here = f"remains at {tavern_id} with no active intention"
         report.append({
             "actor_id": actor.id,
-            "why_here": actor.current_activity or actor.intention,
+            "why_here": why_here,
             "where_before": previous_places[0] if previous_places else None,
-            "going_afterward": next_entry.activity if next_entry else None,
+            "going_afterward": next_entry.activity if next_entry else "no scheduled next activity",
             "relationships": dict(actor.relationships),
             "witnessed": known,
             "heard": heard,

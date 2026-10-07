@@ -65,6 +65,13 @@ def tick(world: World, hours: int = 1) -> None:
     for actor in world.actors.values():
         if actor.traveling_to is not None:
             continue
+        if actor.active_task and actor.task_target_location_id:
+            actor.current_activity = actor.intention = actor.active_task
+            if actor.location_id != actor.task_target_location_id:
+                _start_next_leg(world, actor, actor.task_target_location_id)
+            else:
+                world.record("activity", f"{actor.id} continued task {actor.active_task}", actors=[actor.id], entities=[actor.task_target_location_id])
+            continue
         if actor.schedule_override_until is not None and world.now < actor.schedule_override_until:
             activity = actor.temporary_activity
             target = actor.temporary_target_location_id
@@ -91,6 +98,12 @@ def tick(world: World, hours: int = 1) -> None:
             _start_next_leg(world, actor, entry.target_location_id)
         else:
             world.record("activity", f"{actor.id} began {entry.activity}", actors=[actor.id], entities=[entry.target_location_id])
+            if entry.activity.startswith("work") or entry.activity.startswith("inspect"):
+                employer_id = actor.employer_id
+                if employer_id and employer_id in world.businesses and (world.businesses[employer_id].location_id == actor.location_id or entry.activity.startswith("inspect")):
+                    day_key = world.now.date().isoformat()
+                    actor.work_hours_by_day[day_key] = actor.work_hours_by_day.get(day_key, 0.0) + 1.0
+                    world.record("work", f"{actor.id} worked one qualifying hour", actors=[actor.id, employer_id], entities=[entry.target_location_id], data={"day": day_key, "hours": 1})
 
 
 def interrupt(world: World, actor_id: str, activity: str, target_location_id: str, *, hours: int, reason: str) -> None:

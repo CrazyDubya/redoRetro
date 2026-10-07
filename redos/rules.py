@@ -140,7 +140,8 @@ def _action_from_data(data: dict[str, Any]) -> Action:
         actor_key, place_key = data["actor"], data["to"]
 
         def action(world: World, context: dict[str, Any]) -> Any:
-            return world.move_actor(_resolve(actor_key, context), _resolve(place_key, context), reason="rule moved actor")
+            from .simulation import walk
+            return walk(world, _resolve(actor_key, context), _resolve(place_key, context))
 
         return action
     if op == "record":

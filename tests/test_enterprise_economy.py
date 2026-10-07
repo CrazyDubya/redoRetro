@@ -1,7 +1,7 @@
 import unittest
 
 from redos.bootstrap import build_tiny_world
-from redos.enterprise import borrow, compete, create_contract, invest_in_research, mule_bid, repay, settle_contract
+from redos.enterprise import advance_shipments, borrow, compete, create_contract, dispatch_contract, invest_in_research, mule_bid, repay
 
 
 class EnterpriseEconomyTests(unittest.TestCase):
@@ -22,7 +22,8 @@ class EnterpriseEconomyTests(unittest.TestCase):
         invest_in_research(world, "warehouse-business", 10)
         self.assertEqual(warehouse.research, 10)
         contract = create_contract(world, shop.id, warehouse.id, "metals", 2, 20, origin_id="shop", destination_id="warehouse", due_days=2)
-        settle_contract(world, contract.id)
+        dispatch_contract(world, contract.id)
+        advance_shipments(world, 24)
         self.assertEqual(contract.status, "settled")
         self.assertEqual(world.quantity_held(warehouse.id, "metals"), 7)
 
