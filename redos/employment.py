@@ -30,8 +30,17 @@ def pay_wages(world: World, employer_id: str, *, days: int = 1) -> float:
     for actor_id, opening in opening_by_actor.items():
         if opening is None:
             continue
-        amount = opening.wage_per_day * days
-        world.pay(employer_id, actor_id, amount, reason="wages paid")
+        actor = world.actors[actor_id]
+        day_key = world.now.date().isoformat()
+        if day_key in actor.paid_work_days:
+            continue
+        qualifying_hours = actor.work_hours_by_day.get(day_key, 0.0)
+        amount = opening.wage_per_day * days * min(1.0, qualifying_hours / max(1, opening.end_hour - opening.start_hour))
+        if amount <= 0:
+            world.record("wage_missed", f"{actor_id} received no wages because no qualifying work was recorded", actors=[actor_id, employer_id], entities=[opening.id], data={"hours": qualifying_hours})
+            continue
+        world.pay(employer_id, actor_id, amount, reason="wages paid for recorded work")
+        actor.paid_work_days.add(day_key)
         total += amount
     return total
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+import random
 from typing import Any, Iterable
 
 
@@ -95,6 +96,11 @@ class Actor:
     temporary_target_location_id: str | None = None
     is_player: bool = False
     position: tuple[float, float] | None = None
+    work_hours_by_day: dict[str, float] = field(default_factory=dict)
+    paid_work_days: set[str] = field(default_factory=set)
+    needs: dict[str, float] = field(default_factory=dict)
+    active_task: str | None = None
+    task_target_location_id: str | None = None
 
 
 @dataclass
@@ -111,6 +117,7 @@ class Business:
     market_share: dict[str, float] = field(default_factory=dict)
     debt: float = 0.0
     research: float = 0.0
+    inventory_targets: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -135,7 +142,16 @@ class Contract:
     origin_id: str
     destination_id: str
     due_day: int
+    due_at: datetime | None = None
     status: str = "open"
+    shipment_id: str | None = None
+    signed_at: datetime | None = None
+    allocated_at: datetime | None = None
+    dispatched_at: datetime | None = None
+    delivered_at: datetime | None = None
+    failure_reason: str | None = None
+    causal_event_ids: list[str] = field(default_factory=list)
+    late_reported: bool = False
 
 
 @dataclass(frozen=True)
@@ -193,6 +209,19 @@ class Movement:
 
 
 @dataclass
+class Shipment:
+    id: str
+    contract_id: str
+    origin_id: str
+    destination_id: str
+    route_ids: tuple[str, ...]
+    current_route_index: int = 0
+    elapsed_hours: float = 0.0
+    cargo_lot_ids: list[str] = field(default_factory=list)
+    status: str = "dispatched"
+
+
+@dataclass
 class AggregatePopulation:
     id: str
     place_id: str
@@ -231,8 +260,10 @@ class CausalEvent:
 class World:
     """Canonical world state and mutation gateway."""
 
-    def __init__(self, *, start: datetime | None = None) -> None:
+    def __init__(self, *, start: datetime | None = None, seed: int = 0) -> None:
         self.now = start or datetime(1770, 1, 1)
+        self.seed = seed
+        self.random = random.Random(seed)
         self.places: dict[str, Place] = {}
         self.routes: dict[str, Route] = {}
         self.goods: dict[str, GoodType] = {}
@@ -248,6 +279,9 @@ class World:
         self.environment_cells: dict[str, EnvironmentCell] = {}
         self.aggregate_populations: dict[str, AggregatePopulation] = {}
         self.movements: dict[str, Movement] = {}
+        self.shipments: dict[str, Shipment] = {}
+        self.recipes: dict[str, list[Any]] = {}
+        self.runtime: dict[str, Any] = {}
         self.events: list[CausalEvent] = []
         self._event_number = 0
         self._lot_number = 0
@@ -273,6 +307,7 @@ class World:
             EnvironmentCell: self.environment_cells,
             AggregatePopulation: self.aggregate_populations,
             Movement: self.movements,
+            Shipment: self.shipments,
         }.get(type(entity))
         if collection is None:
             raise TypeError(f"unsupported world entity: {type(entity)!r}")
@@ -326,6 +361,16 @@ class World:
             return holder_id
         if holder_id in self.households:
             return self.households[holder_id].residence_id
+        if holder_id in self.shipments:
+            shipment = self.shipments[holder_id]
+            if shipment.status == "delivered":
+                return shipment.destination_id
+            if shipment.status == "lost":
+                return shipment.origin_id
+            if shipment.current_route_index < len(shipment.route_ids):
+                route = self.routes[shipment.route_ids[shipment.current_route_index]]
+                return route.origin_id
+            return shipment.destination_id
         raise KeyError(f"unknown holder {holder_id!r}")
 
     def position_of(self, holder_id: str) -> tuple[float, float]:
@@ -359,6 +404,8 @@ class World:
             raise ValueError("lot quantity must be positive")
         if good_type_id not in self.goods:
             raise KeyError(good_type_id)
+        if not self._holder_exists(holder_id):
+            raise KeyError(f"unknown holder {holder_id!r}")
         self._lot_number += 1
         lot = InventoryLot(
             id=f"lot-{self._lot_number}",
@@ -372,7 +419,18 @@ class World:
         self.lots[lot.id] = lot
         self._lot_original_quantity[lot.id] = quantity
         self._lot_counts_as_creation[lot.id] = counts_as_creation
+        self._sync_market_balances(self.location_of(holder_id))
         return lot
+
+    def _holder_exists(self, holder_id: str) -> bool:
+        return holder_id in self.actors or holder_id in self.businesses or holder_id in self.places or holder_id in self.households or holder_id in self.shipments
+
+    def _sync_market_balances(self, place_id: str) -> None:
+        for market in self.markets.values():
+            if market.place_id != place_id:
+                continue
+            for good_id in market.fixed_prices:
+                market.balances[good_id] = self.quantity_held(place_id, good_id)
 
     def transfer_goods(
         self,
@@ -414,6 +472,8 @@ class World:
             causes=causes,
             data={"quantity": quantity, "good_type_id": good_type_id},
         )
+        self._sync_market_balances(self.location_of(from_holder))
+        self._sync_market_balances(self.location_of(to_holder))
         return new_lots
 
     def consume_goods(
@@ -445,6 +505,7 @@ class World:
             causes=causes,
             data={"quantity": quantity, "good_type_id": good_type_id},
         )
+        self._sync_market_balances(self.location_of(holder_id))
         return consumed
 
     def move_actor(self, actor_id: str, destination_id: str, *, causes: Iterable[str] = (), reason: str = "actor moved") -> CausalEvent:

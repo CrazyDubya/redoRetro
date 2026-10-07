@@ -47,6 +47,9 @@ class LivingWorldTests(unittest.TestCase):
         hire(world, "merchant", "shopkeeper-job")
         starting_cash = world.actors["merchant"].money
         pay_wages(world, "shop-market-cashier")
+        self.assertEqual(world.actors["merchant"].money, starting_cash)
+        world.actors["merchant"].work_hours_by_day[world.now.date().isoformat()] = 8
+        pay_wages(world, "shop-market-cashier")
         self.assertEqual(world.actors["merchant"].money, starting_cash + 50)
         charge_household_expense(world, "merchant", 10, expense="rent")
         self.assertEqual(world.actors["merchant"].money, starting_cash + 50)

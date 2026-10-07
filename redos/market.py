@@ -92,10 +92,11 @@ def seed_market_inventory(world: World, market_id: str) -> None:
 
 def _market_price(world: World, market: Market, good_type_id: str) -> float:
     base = market.fixed_prices[good_type_id]
-    balance = market.balances.get(good_type_id, 0.0) - market.demand_backlog.get(good_type_id, 0.0)
+    # Physical lots are canonical.  balances is only a published economic
+    # measurement retained for reports and never drives stock transfers.
+    physical_stock = world.quantity_held(market.place_id, good_type_id)
+    balance = physical_stock - market.demand_backlog.get(good_type_id, 0.0)
     rate = abs(market.production_rates.get(good_type_id, 0.0)) + abs(market.demand_rates.get(good_type_id, 0.0))
-    if rate == 0:
-        return base
     # This is the BASIC formula's economic shape: a positive stock balance
     # lowers price and a negative balance raises it, with a bounded margin.
     pressure = max(-0.75, min(1.5, -balance / (max(1.0, rate) * 36.0)))
@@ -117,7 +118,7 @@ def refresh_market(world: World, market_id: str, *, days: int = 1) -> None:
     for good_id in market.balances:
         production = market.production_rates.get(good_id, 0.0) * days
         demand = market.demand_rates.get(good_id, 0.0) * days
-        market.balances[good_id] += production - demand
+        market.balances[good_id] = world.quantity_held(market.place_id, good_id)
         market.demand_backlog[good_id] = max(0.0, market.demand_backlog.get(good_id, 0.0) + demand - production)
         market.price_history.setdefault(good_id, []).append(_market_price(world, market, good_id))
     market.last_updated_day += days
@@ -133,6 +134,7 @@ def refresh_market(world: World, market_id: str, *, days: int = 1) -> None:
                 data={"quantity": quantity},
             )
             world.create_lot(good_id, quantity, holder_id=market.place_id, owner_id=market.place_id, provenance=(production_event.id,))
+            market.balances[good_id] = world.quantity_held(market.place_id, good_id)
     world.record("market_refresh", f"{market.id} refreshed for {days} day(s)", entities=[market_id])
 
 
@@ -155,6 +157,15 @@ def buy(world: World, buyer_id: str, market_id: str, good_type_id: str, quantity
         raise ValueError("buyer must be physically present at the market")
     available = world.quantity_held(place_id, good_type_id)
     if available + 1e-9 < quantity:
+        shortfall = quantity - available
+        market.demand_backlog[good_type_id] = market.demand_backlog.get(good_type_id, 0.0) + shortfall
+        world.record(
+            "unmet_demand",
+            f"{buyer_id} could not buy {quantity} {good_type_id}",
+            actors=[buyer_id],
+            entities=[market_id, good_type_id],
+            data={"requested": quantity, "available": available, "shortfall": shortfall},
+        )
         raise ValueError(f"market shortage: only {available} available")
     target = _market_price(world, market, good_type_id)
     unit_price = offer if offer is not None else target
@@ -163,7 +174,7 @@ def buy(world: World, buyer_id: str, market_id: str, good_type_id: str, quantity
     quote_obj = TradeQuote(market_id, good_type_id, quantity, unit_price, "buy")
     payment = world.pay(buyer_id, place_id if place_id in world.businesses else _market_cashier(world, place_id), quote_obj.total, reason="purchase at market")
     world.transfer_goods(good_type_id, quantity, from_holder=place_id, to_holder=buyer_id, to_owner=buyer_id, causes=[payment.id], reason="goods bought at market")
-    market.balances[good_type_id] -= quantity
+    market.balances[good_type_id] = world.quantity_held(place_id, good_type_id)
     world.record("trade", f"{buyer_id} bought {quantity} {good_type_id}", actors=[buyer_id], entities=[market_id, good_type_id], causes=[payment.id], data={"quantity": quantity, "unit_price": unit_price})
     return quote_obj
 
@@ -191,19 +202,16 @@ def sell(world: World, seller_id: str, market_id: str, good_type_id: str, quanti
     quote_obj = TradeQuote(market_id, good_type_id, quantity, unit_price, "sell")
     payment = world.pay(cashier, seller_id, quote_obj.total, reason="market purchase from seller")
     world.transfer_goods(good_type_id, quantity, from_holder=seller_id, to_holder=market.place_id, to_owner=market.place_id, causes=[payment.id], reason="goods sold into market")
-    market.balances[good_type_id] += quantity
+    market.balances[good_type_id] = world.quantity_held(market.place_id, good_type_id)
     world.record("trade", f"{seller_id} sold {quantity} {good_type_id}", actors=[seller_id], entities=[market_id, good_type_id], causes=[payment.id], data={"quantity": quantity, "unit_price": unit_price})
     return quote_obj
 
 
 def travel(world: World, actor_id: str, destination_id: str) -> int:
-    actor = world.actors[actor_id]
-    route = next((route for route in world.routes.values() if route.origin_id == actor.location_id and route.destination_id == destination_id), None)
-    if route is None:
-        raise ValueError(f"no route from {actor.location_id} to {destination_id}")
-    world.advance(route.travel_days)
-    world.move_actor(actor_id, destination_id, reason=f"travelled {route.id}")
-    return route.travel_days
+    from .simulation import walk
+
+    movement = walk(world, actor_id, destination_id)
+    return int(movement.duration_hours // 24) if movement.duration_hours >= 24 else 0
 
 
 def bargain(target: float, offer: float, *, side: str, round_number: int, max_rounds: int = 3) -> bool:
@@ -220,6 +228,9 @@ def autonomous_trade(world: World, actor_id: str, origin_market: str, destinatio
     before_money = world.actors[actor_id].money
     buy_quote = buy(world, actor_id, origin_market, good_type_id, quantity)
     days = travel(world, actor_id, destination)
+    from .simulation import tick
+    while world.actors[actor_id].traveling_to is not None:
+        tick(world, 1)
     destination_market = next(market for market in world.markets.values() if market.place_id == destination)
     sell_quote = sell(world, actor_id, destination_market.id, good_type_id, quantity)
     return {

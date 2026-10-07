@@ -17,16 +17,16 @@ class StarTraderMarketTests(unittest.TestCase):
         self.assertGreater(result["profit"], 0)
         self.assertLess(world.quantity_held("shop", "metals"), before_shop)
         self.assertEqual(world.quantity_held("merchant", "metals"), 0)
-        self.assertEqual(world.quantity_held("north", "metals"), before_north + 5.0)
+        self.assertAlmostEqual(world.quantity_held("north", "metals"), before_north + 5.0)
         self.assertEqual(world.actors["merchant"].location_id, "north")
         self.assertTrue(any(event.kind == "trade" for event in world.events))
 
     def test_market_quotes_respond_to_supply_and_shortage(self) -> None:
         world = build_tiny_world()
         market = world.markets["shop-market"]
-        market.balances["medicine"] = 40
+        world.create_lot("medicine", 40, holder_id="shop", owner_id="shop")
         surplus = quote(world, "shop-market", "medicine", 1, side="buy").unit_price
-        market.balances["medicine"] = -40
+        world.consume_goods("shop", "medicine", world.quantity_held("shop", "medicine"))
         shortage = quote(world, "shop-market", "medicine", 1, side="buy").unit_price
         self.assertLess(surplus, shortage)
 
@@ -35,6 +35,9 @@ class StarTraderMarketTests(unittest.TestCase):
         self.assertTrue(bargain(100, 105, side="buy", round_number=1))
         self.assertFalse(bargain(100, 200, side="buy", round_number=1))
         self.assertEqual(travel(world, "merchant", "north"), 2)
+        self.assertEqual(world.now.day, 1)
+        from redos.simulation import tick
+        tick(world, 48)
         self.assertEqual(world.now.day, 3)
 
 

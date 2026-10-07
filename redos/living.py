@@ -113,28 +113,37 @@ def tell(
 def propagate_information(world: World, *, proposition: str, location_id: str) -> list[Statement]:
     """Move information one social hop among people physically present."""
     present = [actor for actor in world.actors.values() if actor.location_id == location_id and actor.traveling_to is None]
-    statements: list[Statement] = []
-    for speaker in present:
-        if proposition not in speaker.beliefs:
-            continue
-        content = speaker.beliefs[proposition]
-        source_truth = next(
+    # Snapshot sources before any statement is made.  A belief acquired in
+    # this call is eligible for a later causal exchange, never as a new source
+    # in the same propagation pass.
+    sources = [
+        (speaker.id, speaker.beliefs[proposition], next(
             (statement.truthful for statement in reversed(world.statements.values()) if statement.proposition == proposition and statement.listener_id == speaker.id),
             True,
+        ))
+        for speaker in present
+        if proposition in speaker.beliefs
+    ]
+    statements: list[Statement] = []
+    for listener in present:
+        if proposition in listener.knowledge:
+            continue
+        source = next((source for source in sources if source[0] != listener.id), None)
+        if source is None:
+            continue
+        speaker_id, content, source_truth = source
+        if listener.beliefs.get(proposition) == content:
+            continue
+        statement = tell(
+            world,
+            speaker_id,
+            listener.id,
+            proposition,
+            content,
+            truthful=source_truth,
+            trust_delta=(listener.trust.get(speaker_id, 0.5) - 0.5) * 0.1,
         )
-        for listener in present:
-            if listener.id == speaker.id or listener.beliefs.get(proposition) == content or proposition in listener.knowledge:
-                continue
-            statement = tell(
-                world,
-                speaker.id,
-                listener.id,
-                proposition,
-                content,
-                truthful=source_truth,
-                trust_delta=(listener.trust.get(speaker.id, 0.5) - 0.5) * 0.1,
-            )
-            statements.append(statement)
+        statements.append(statement)
     return statements
 
 
@@ -198,6 +207,8 @@ def auction(world: World, seller_id: str, good_type_id: str, quantity: float, bi
     for bid in candidates:
         if bid.amount <= 0:
             continue
+        if world.quantity_held(seller_id, good_type_id) + 1e-9 < quantity:
+            break
         try:
             payment = world.pay(bid.bidder_id, seller_id, bid.amount, reason="auction settlement")
         except ValueError:
