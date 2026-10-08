@@ -4,11 +4,12 @@ from datetime import datetime
 from redos.audit import causal_chain, conservation_errors, market_balance_errors, validate_world
 from redos.bootstrap import build_tiny_world
 from redos.enterprise import allocate_contract, advance_shipments, create_contract, dispatch_contract, mule_bid, settle_contract
-from redos.living import Bid, auction, propagate_information, recollect, tell, witness_event
-from redos.market import buy, travel
-from redos.model import Actor
+from redos.living import Bid, auction, meet, propagate_information, recollect, tell, witness_event
+from redos.market import autonomous_trade, buy, refresh_market, travel
+from redos.model import Actor, Place, Route
 from redos.employment import charge_household_expense, hire, pay_wages
 from redos.model import JobOpening, ScheduleEntry
+from redos.runtime import _adjudicate_food_need, _complete_food_task, adjudicate_hour
 from redos.simulation import interrupt, interrupt_for_family_problem, tick
 
 
@@ -68,8 +69,12 @@ class CorrectiveMilestoneTests(unittest.TestCase):
         advance_shipments(world, 24)
         self.assertEqual(contract.status, "failed")
         self.assertEqual(contract.failure_reason, "buyer insolvent at delivery")
-        self.assertEqual(world.quantity_held(seller.id, "metals"), 1)
+        self.assertEqual(world.quantity_held(seller.id, "metals"), 0)
         self.assertEqual(world.quantity_held(buyer.id, "metals"), 0)
+        self.assertEqual(world.shipments[contract.shipment_id].status, "returning")
+        advance_shipments(world, 24)
+        self.assertEqual(world.shipments[contract.shipment_id].status, "returned")
+        self.assertEqual(world.quantity_held(seller.id, "metals"), 1)
 
     def test_obligations_reserve_stock_and_failed_sales_leave_money_untouched(self) -> None:
         world = build_tiny_world()
@@ -109,6 +114,75 @@ class CorrectiveMilestoneTests(unittest.TestCase):
         self.assertEqual(world.actors["merchant"].location_id, "shop")
         tick(world, 48)
         self.assertEqual(world.actors["merchant"].location_id, "north")
+
+    def test_autonomous_trade_completes_all_route_legs(self) -> None:
+        world = build_tiny_world()
+        world.routes.pop("shop-north")
+        world.add(Place("waypoint", "Way Point", 1))
+        world.add(Route("shop-waypoint", "shop", "waypoint", 1.0, 1))
+        world.add(Route("waypoint-north", "waypoint", "north", 1.0, 1))
+        world.create_lot("medicine", 1, holder_id="shop", owner_id="shop-market-cashier")
+        north_stock = world.quantity_held("north", "medicine")
+        result = autonomous_trade(world, "merchant", "shop-market", "north", "medicine", 1)
+        self.assertEqual(world.actors["merchant"].location_id, "north")
+        self.assertIsNone(world.actors["merchant"].journey_destination_id)
+        self.assertEqual(sum(event.kind == "travel_started" for event in world.events), 2)
+        self.assertEqual(world.quantity_held("merchant", "medicine"), 0)
+        self.assertEqual(result["destination_stock"], north_stock + 1)
+
+    def test_food_stays_with_shopper_until_the_shopper_reaches_home(self) -> None:
+        from redos.vertical import build_integrated_world
+
+        slice_state = build_integrated_world()
+        world = slice_state.world
+        actor = world.actors["citizen-0"]
+        household = world.households[actor.household_id]
+        actor.location_id = "shop"
+        actor.active_task = "acquire food"
+        actor.task_target_location_id = "shop"
+        _complete_food_task(world, actor)
+        self.assertEqual(world.quantity_held(actor.id, "bread"), 1)
+        self.assertEqual(world.quantity_held(household.id, "bread"), 0)
+        while actor.traveling_to is not None or actor.location_id != household.residence_id:
+            tick(world, 1)
+            _complete_food_task(world, actor)
+        self.assertEqual(world.quantity_held(actor.id, "bread"), 0)
+        self.assertEqual(world.quantity_held(household.id, "bread"), 1)
+
+    def test_food_need_does_not_preempt_work_or_duplicate_a_returning_shopper(self) -> None:
+        world = build_tiny_world()
+        actor = world.actors["merchant"]
+        actor.schedule = [ScheduleEntry(0, 24, "work", "shop")]
+        actor.current_activity = "work"
+        _adjudicate_food_need(world)
+        self.assertIsNone(actor.active_task)
+        actor.current_activity = "at home"
+        actor.active_task = "return with food"
+        _adjudicate_food_need(world)
+        self.assertEqual(actor.active_task, "return with food")
+
+    def test_market_refresh_requires_an_explicit_production_source(self) -> None:
+        world = build_tiny_world()
+        market = world.markets["shop-market"]
+        market.production_source = None
+        before = world.quantity_held(market.place_id, "medicine")
+        with self.assertRaises(ValueError):
+            refresh_market(world, market.id)
+        self.assertEqual(world.quantity_held(market.place_id, "medicine"), before)
+
+    def test_encounters_are_bounded_and_information_uses_only_encounter_edges(self) -> None:
+        world = build_tiny_world()
+        for actor_id in ("a", "b", "c", "d", "e", "f"):
+            world.add(Actor(actor_id, actor_id, "tavern"))
+            world.actors[actor_id].current_activity = "visit tavern"
+        adjudicate_hour(world)
+        self.assertEqual(sum(event.kind == "meeting" for event in world.events), 3)
+        world.actors["a"].beliefs["seal"] = "the seal broke"
+        world.runtime["active_encounters"] = (("a", "b"), ("c", "d"))
+        world.runtime["active_encounter_at"] = world.now
+        statements = propagate_information(world, proposition="seal", location_id="tavern")
+        self.assertEqual({statement.listener_id for statement in statements}, {"b"})
+        self.assertNotIn("seal", world.actors["d"].beliefs)
 
     def test_schedule_interruption_reduces_attendance_and_payroll(self) -> None:
         world = build_tiny_world()
@@ -168,10 +242,10 @@ class CorrectiveMilestoneTests(unittest.TestCase):
         observation = witness_event(world, event_id=event.id, content="the seal broke", witnesses=["a"])[0]
         recollect(world, observation.id, content="someone touched the seal", confidence=0.4)
         world.actors["a"].beliefs["seal"] = "someone touched the seal"
-        first = propagate_information(world, proposition="seal", location_id="tavern")
+        first = propagate_information(world, proposition="seal", location_id="tavern", encounter_pairs=(("a", "b"),))
         self.assertTrue(first)
         self.assertEqual({statement.speaker_id for statement in first}, {"a"})
-        second = propagate_information(world, proposition="seal", location_id="tavern")
+        second = propagate_information(world, proposition="seal", location_id="tavern", encounter_pairs=(("a", "b"),))
         self.assertFalse(second)
         self.assertEqual(next(item for item in world.events if item.id == event.id).description, "a seal broke")
         self.assertNotEqual(world.actors["b"].beliefs["seal"], "the seal broke")

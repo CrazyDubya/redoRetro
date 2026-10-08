@@ -35,3 +35,10 @@ pytest -q
 
 The test suite includes both the focused donor kernels and the integrated
 vertical-slice acceptance tests.
+
+The corrective review suite also verifies that household food remains in the
+shopper's physical inventory until arrival home, failed cargo returns by
+shipment, multi-leg commerce completes every route leg, conversations use
+actual encounter edges, work obligations defer shopping, and market refresh
+requires an explicit aggregate production source. GitHub Actions runs the
+same suite on every push to `main` and every pull request.

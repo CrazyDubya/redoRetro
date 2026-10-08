@@ -59,6 +59,22 @@ class IntegratedVerticalSliceTests(unittest.TestCase):
         self.assertTrue(all(event.id in world.actors[actor_id].knowledge for actor_id in observed))
         self.assertTrue(all(event.id not in actor.knowledge for actor in world.actors.values() if actor.id not in observed))
 
+    def test_route_cost_changes_tavern_population_without_editing_schedules(self) -> None:
+        baseline = build_integrated_world().world
+        for _ in range(19):
+            advance_world(baseline, 1)
+        baseline_patrons = {actor.id for actor in baseline.actors.values() if actor.location_id == "tavern"}
+
+        costly = build_integrated_world().world
+        for route in costly.routes.values():
+            if route.origin_id in {"home-a", "home-b", "home-c", "tavern", "shop", "workshop", "warehouse", "dock"} and route.destination_id in {"home-a", "home-b", "home-c", "tavern", "shop", "workshop", "warehouse", "dock"}:
+                route.travel_days = 2
+        for _ in range(19):
+            advance_world(costly, 1)
+        costly_patrons = {actor.id for actor in costly.actors.values() if actor.location_id == "tavern"}
+        self.assertTrue(baseline_patrons)
+        self.assertLess(len(costly_patrons), len(baseline_patrons))
+
 
 if __name__ == "__main__":
     unittest.main()
