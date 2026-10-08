@@ -17,6 +17,11 @@ def add_asset(world: World, asset: TransportAsset) -> TransportAsset:
         raise ValueError("transport capacity must be positive")
     if not 0 <= asset.condition <= 1:
         raise ValueError("transport condition must be between zero and one")
+    if not 0 <= asset.readiness <= 1:
+        raise ValueError("transport readiness must be between zero and one")
+    for supply, quantity in asset.supplies.items():
+        if quantity < 0 or quantity > asset.supply_capacity.get(supply, quantity) + 1e-9:
+            raise ValueError(f"invalid starting supply for {supply}")
     world.add(asset)
     return asset
 
@@ -32,6 +37,88 @@ def add_facility(world: World, facility: TransportFacility) -> TransportFacility
 
 def _asset_load(world: World, asset_id: str) -> float:
     return sum(lot.quantity for lot in world.lots_held_by(asset_id))
+
+
+def assign_asset(world: World, asset_id: str, assignment_id: str, *, kind: str) -> TransportAsset:
+    """Reserve one persistent asset for exactly one current obligation."""
+    asset = world.transport_assets[asset_id]
+    if not asset.available or asset.assigned_shipment_id is not None:
+        raise ValueError(f"carrier {asset_id} is unavailable")
+    if asset.condition <= 0 or asset.readiness <= 0:
+        raise ValueError(f"carrier {asset_id} is not operational")
+    asset.assigned_shipment_id = assignment_id
+    asset.assignment_kind = kind
+    asset.available = False
+    asset.unavailable_reason = None
+    world.record("asset_assigned", f"{asset.id} assigned to {assignment_id}", entities=[asset.id, assignment_id], data={"kind": kind})
+    return asset
+
+
+def release_asset(world: World, asset_id: str, *, available: bool = True, reason: str | None = None) -> TransportAsset:
+    asset = world.transport_assets[asset_id]
+    asset.assigned_shipment_id = None
+    asset.assignment_kind = None
+    asset.available = available and asset.condition > 0 and asset.readiness > 0
+    asset.unavailable_reason = None if asset.available else reason
+    return asset
+
+
+def replenish_asset(world: World, asset_id: str, supply: str, quantity: float, *, source_id: str | None = None) -> float:
+    """Add fuel or a named operational supply to a persistent asset."""
+    if quantity <= 0:
+        raise ValueError("replenishment quantity must be positive")
+    asset = world.transport_assets[asset_id]
+    if supply == "fuel":
+        before = asset.fuel
+        asset.fuel = min(asset.fuel_capacity, asset.fuel + quantity) if asset.fuel_capacity > 0 else asset.fuel + quantity
+        added = asset.fuel - before
+    else:
+        before = asset.supplies.get(supply, 0.0)
+        capacity = asset.supply_capacity.get(supply, float("inf"))
+        asset.supplies[supply] = min(capacity, before + quantity)
+        added = asset.supplies[supply] - before
+    if added > 0 and asset.condition > 0 and asset.readiness > 0 and asset.assigned_shipment_id is None:
+        asset.available = True
+        asset.unavailable_reason = None
+    world.record("asset_replenished", f"{asset.id} received {added} {supply}", entities=[asset.id, *( [source_id] if source_id else [])], data={"supply": supply, "quantity": added})
+    return added
+
+
+def repair_asset(world: World, asset_id: str, amount: float = 1.0) -> float:
+    if amount <= 0:
+        raise ValueError("repair amount must be positive")
+    asset = world.transport_assets[asset_id]
+    repaired = min(amount, 1.0 - asset.condition)
+    asset.condition += repaired
+    if asset.condition > 0 and asset.readiness > 0 and asset.assigned_shipment_id is None:
+        asset.available = True
+        asset.unavailable_reason = None
+    world.record("asset_repaired", f"{asset.id} repaired", entities=[asset.id], data={"amount": repaired})
+    return repaired
+
+
+def consume_asset_supply(world: World, asset_id: str, supply: str, quantity: float, *, causes: tuple[str, ...] = ()) -> bool:
+    if quantity < 0:
+        raise ValueError("supply consumption cannot be negative")
+    asset = world.transport_assets[asset_id]
+    if supply == "fuel":
+        available = asset.fuel
+        if available + 1e-9 < quantity:
+            asset.available = False
+            asset.unavailable_reason = f"{supply} exhausted"
+            world.record("asset_unavailable", f"{asset.id} lacks {supply}", entities=[asset.id], causes=causes, data={"supply": supply, "required": quantity, "available": available})
+            return False
+        asset.fuel -= quantity
+    else:
+        available = asset.supplies.get(supply, 0.0)
+        if available + 1e-9 < quantity:
+            asset.available = False
+            asset.unavailable_reason = f"{supply} exhausted"
+            world.record("asset_unavailable", f"{asset.id} lacks {supply}", entities=[asset.id], causes=causes, data={"supply": supply, "required": quantity, "available": available})
+            return False
+        asset.supplies[supply] = available - quantity
+    world.record("asset_supply_consumed", f"{asset.id} consumed {quantity} {supply}", entities=[asset.id], causes=causes, data={"supply": supply, "quantity": quantity})
+    return True
 
 
 def dispatch_freight(
@@ -81,8 +168,7 @@ def dispatch_freight(
     )
     world.add(shipment)
     # Reserve at assignment time, not when loading eventually begins.
-    asset.assigned_shipment_id = shipment.id
-    asset.available = False
+    assign_asset(world, asset.id, shipment.id, kind="freight")
     origin.queue.append(shipment.id)
     contract.shipment_id = shipment.id
     queued = world.record(
@@ -117,8 +203,8 @@ def _fail(world: World, shipment: Shipment, reason: str) -> None:
     shipment.status = "failed"
     if shipment.carrier_id is not None and shipment.carrier_id in world.transport_assets:
         asset = world.transport_assets[shipment.carrier_id]
-        asset.assigned_shipment_id = None
-        asset.available = True
+        hold = "fuel" in reason or "condition" in reason or "supply" in reason or "exhausted" in reason
+        release_asset(world, asset.id, available=not hold, reason=reason if hold else None)
     for facility in world.transport_facilities.values():
         if shipment.id in facility.queue:
             facility.queue.remove(shipment.id)
@@ -236,8 +322,7 @@ def _settle_arrival(world: World, shipment: Shipment) -> None:
     )
     contract.causal_event_ids.append(settled.id)
     shipment.status = "delivered"
-    asset.assigned_shipment_id = None
-    asset.available = True
+    release_asset(world, asset.id)
 
 
 def _advance_freight_step(world: World, hours: float) -> list[str]:
@@ -282,12 +367,23 @@ def _advance_freight_step(world: World, hours: float) -> list[str]:
                 duration = max(1.0, route.travel_days * 24.0)
                 available = duration - shipment.elapsed_hours
                 step = min(remaining, available)
-                if asset.fuel_capacity > 0:
-                    fuel = asset.fuel_burn_per_hour * step
-                    if asset.fuel + 1e-9 < fuel:
-                        _fail(world, shipment, "carrier fuel exhausted")
+                if asset.fuel_capacity > 0 and not consume_asset_supply(
+                    world,
+                    asset.id,
+                    "fuel",
+                    asset.fuel_burn_per_hour * step,
+                    causes=tuple(world.contracts[shipment.contract_id].causal_event_ids[-1:]),
+                ):
+                    _fail(world, shipment, "carrier fuel exhausted")
+                    break
+                resource_failure = False
+                for supply, burn_rate in asset.supply_burn_per_hour.items():
+                    if not consume_asset_supply(world, asset.id, supply, burn_rate * step, causes=tuple(world.contracts[shipment.contract_id].causal_event_ids[-1:])):
+                        _fail(world, shipment, f"carrier {supply} exhausted")
+                        resource_failure = True
                         break
-                    asset.fuel -= fuel
+                if resource_failure:
+                    break
                 cost = asset.operating_cost_per_hour * step
                 asset.accrued_operating_cost += cost
                 asset.operating_cost_due += cost
