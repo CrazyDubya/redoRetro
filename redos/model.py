@@ -101,6 +101,7 @@ class Actor:
     needs: dict[str, float] = field(default_factory=dict)
     active_task: str | None = None
     task_target_location_id: str | None = None
+    journey_destination_id: str | None = None
 
 
 @dataclass
@@ -243,6 +244,8 @@ class Market:
     demand_backlog: dict[str, float] = field(default_factory=dict)
     price_history: dict[str, list[float]] = field(default_factory=dict)
     last_updated_day: int = 0
+    production_source: str | None = None
+    production_account_id: str | None = None
 
 
 @dataclass

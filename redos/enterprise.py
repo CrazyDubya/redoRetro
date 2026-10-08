@@ -143,7 +143,7 @@ def advance_shipments(world: World, hours: float = 1.0) -> list[str]:
         raise ValueError("shipment time cannot move backwards")
     delivered: list[str] = []
     for shipment in list(world.shipments.values()):
-        if shipment.status not in {"dispatched", "in_transit"}:
+        if shipment.status not in {"dispatched", "in_transit", "returning"}:
             continue
         remaining = hours
         while remaining > 0 and shipment.current_route_index < len(shipment.route_ids):
@@ -161,6 +161,26 @@ def advance_shipments(world: World, hours: float = 1.0) -> list[str]:
             shipment.status = "in_transit"
             continue
         contract = world.contracts[shipment.contract_id]
+        if shipment.status == "returning":
+            seller = world.businesses[contract.seller_id]
+            world.transfer_goods(
+                contract.good_type_id,
+                contract.quantity,
+                from_holder=shipment.id,
+                to_holder=seller.id,
+                to_owner=seller.id,
+                reason=f"{contract.id} cargo returned after failed settlement",
+            )
+            shipment.status = "returned"
+            returned = world.record(
+                "cargo_returned",
+                f"{contract.id} cargo physically returned to seller",
+                actors=[seller.id],
+                entities=[contract.id, shipment.id],
+                causes=contract.causal_event_ids[-1:],
+            )
+            contract.causal_event_ids.append(returned.id)
+            continue
         if contract.due_at is not None and world.now > contract.due_at and not contract.late_reported:
             late = world.record("contract_late", f"{contract.id} missed its delivery deadline", actors=[contract.seller_id, contract.buyer_id], entities=[contract.id, shipment.id], causes=contract.causal_event_ids[-1:], data={"due_at": contract.due_at.isoformat(), "arrived_at": world.now.isoformat()})
             contract.causal_event_ids.append(late.id)
@@ -171,10 +191,34 @@ def advance_shipments(world: World, hours: float = 1.0) -> list[str]:
         if buyer.cash + 1e-9 < total:
             contract.status = "failed"
             contract.failure_reason = "buyer insolvent at delivery"
-            shipment.status = "lost"
-            world.transfer_goods(contract.good_type_id, contract.quantity, from_holder=shipment.id, to_holder=seller.id, to_owner=seller.id, reason=f"{contract.id} returned after failed settlement")
             failed = world.record("contract_failed", f"{contract.id} failed at delivery", actors=[buyer.id, seller.id], entities=[contract.id, shipment.id], causes=contract.causal_event_ids[-1:], data={"reason": contract.failure_reason})
             contract.causal_event_ids.append(failed.id)
+            return_path = route_path(world, contract.destination_id, seller.location_id)
+            if seller.location_id == contract.destination_id:
+                world.transfer_goods(
+                    contract.good_type_id,
+                    contract.quantity,
+                    from_holder=shipment.id,
+                    to_holder=seller.id,
+                    to_owner=seller.id,
+                    reason=f"{contract.id} cargo returned to co-located seller",
+                )
+                shipment.destination_id = seller.location_id
+                shipment.status = "returned"
+                world.record("cargo_returned", f"{contract.id} cargo returned to co-located seller", actors=[seller.id], entities=[contract.id, shipment.id], causes=[failed.id])
+            elif return_path:
+                shipment.origin_id = contract.destination_id
+                shipment.destination_id = seller.location_id
+                shipment.route_ids = tuple(route.id for route in return_path)
+                shipment.current_route_index = 0
+                shipment.elapsed_hours = 0.0
+                shipment.status = "returning"
+                world.record("cargo_return_started", f"{contract.id} cargo began its physical return", actors=[seller.id], entities=[contract.id, shipment.id], causes=[failed.id])
+            else:
+                shipment.origin_id = contract.destination_id
+                shipment.destination_id = contract.destination_id
+                shipment.status = "lost"
+                world.record("cargo_lost", f"{contract.id} cargo could not return to seller", actors=[seller.id], entities=[contract.id, shipment.id], causes=[failed.id])
             continue
         delivery_holder = buyer.location_id if buyer.kind in {"market", "shop"} else buyer.id
         world.transfer_goods(contract.good_type_id, contract.quantity, from_holder=shipment.id, to_holder=delivery_holder, to_owner=buyer.id, reason=f"{contract.id} goods delivered")

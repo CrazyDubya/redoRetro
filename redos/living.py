@@ -110,9 +110,26 @@ def tell(
     return statement
 
 
-def propagate_information(world: World, *, proposition: str, location_id: str) -> list[Statement]:
-    """Move information one social hop among people physically present."""
+def propagate_information(
+    world: World,
+    *,
+    proposition: str,
+    location_id: str,
+    encounter_pairs: Iterable[tuple[str, str]] | None = None,
+) -> list[Statement]:
+    """Move information one social hop across actual encounters only."""
     present = [actor for actor in world.actors.values() if actor.location_id == location_id and actor.traveling_to is None]
+    present_ids = {actor.id for actor in present}
+    if encounter_pairs is None:
+        if world.runtime.get("active_encounter_at") == world.now:
+            encounter_pairs = world.runtime.get("active_encounters", ())
+        else:
+            encounter_pairs = ()
+    pairs = tuple(
+        (speaker_id, listener_id)
+        for speaker_id, listener_id in encounter_pairs
+        if speaker_id in present_ids and listener_id in present_ids and speaker_id != listener_id
+    )
     # Snapshot sources before any statement is made.  A belief acquired in
     # this call is eligible for a later causal exchange, never as a new source
     # in the same propagation pass.
@@ -122,28 +139,37 @@ def propagate_information(world: World, *, proposition: str, location_id: str) -
             True,
         ))
         for speaker in present
+        if any(speaker.id in pair for pair in pairs)
         if proposition in speaker.beliefs
     ]
     statements: list[Statement] = []
-    for listener in present:
-        if proposition in listener.knowledge:
+    for first_id, second_id in pairs:
+        first = world.actors[first_id]
+        second = world.actors[second_id]
+        if proposition in first.beliefs and proposition not in second.knowledge:
+            speaker_id, listener = first_id, second
+        elif proposition in second.beliefs and proposition not in first.knowledge:
+            speaker_id, listener = second_id, first
+        else:
             continue
-        source = next((source for source in sources if source[0] != listener.id), None)
-        if source is None:
-            continue
-        speaker_id, content, source_truth = source
+        content = world.actors[speaker_id].beliefs[proposition]
         if listener.beliefs.get(proposition) == content:
             continue
-        statement = tell(
-            world,
-            speaker_id,
-            listener.id,
-            proposition,
-            content,
-            truthful=source_truth,
-            trust_delta=(listener.trust.get(speaker_id, 0.5) - 0.5) * 0.1,
+        source_truth = next(
+            (statement.truthful for statement in reversed(world.statements.values()) if statement.proposition == proposition and statement.speaker_id == speaker_id),
+            True,
         )
-        statements.append(statement)
+        statements.append(
+            tell(
+                world,
+                speaker_id,
+                listener.id,
+                proposition,
+                content,
+                truthful=source_truth,
+                trust_delta=(listener.trust.get(speaker_id, 0.5) - 0.5) * 0.1,
+            )
+        )
     return statements
 
 

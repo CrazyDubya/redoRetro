@@ -35,7 +35,16 @@ def walk(world: World, actor_id: str, destination_id: str):
     path = route_path(world, actor.location_id, destination_id)
     if not path:
         raise ValueError(f"no walkable path from {actor.location_id} to {destination_id}")
-    return world.begin_movement(actor_id, path[0].id)
+    actor.journey_destination_id = destination_id
+    movement = world.begin_movement(actor_id, path[0].id)
+    world.record(
+        "travel_started",
+        f"{actor_id} started travelling toward {destination_id}",
+        actors=[actor_id],
+        entities=[path[0].id, path[0].destination_id],
+        data={"travel_hours": movement.duration_hours, "distance": path[0].distance},
+    )
+    return movement
 
 
 def _start_next_leg(world: World, actor: Actor, target_id: str) -> bool:
@@ -65,6 +74,19 @@ def tick(world: World, hours: int = 1) -> None:
     for actor in world.actors.values():
         if actor.traveling_to is not None:
             continue
+        if actor.journey_destination_id is not None:
+            if actor.location_id == actor.journey_destination_id:
+                actor.journey_destination_id = None
+            else:
+                if not _start_next_leg(world, actor, actor.journey_destination_id):
+                    world.record(
+                        "travel_failed",
+                        f"{actor.id} could not continue toward {actor.journey_destination_id}",
+                        actors=[actor.id],
+                        entities=[actor.journey_destination_id],
+                    )
+                    actor.journey_destination_id = None
+                continue
         if actor.active_task and actor.task_target_location_id:
             actor.current_activity = actor.intention = actor.active_task
             if actor.location_id != actor.task_target_location_id:

@@ -17,7 +17,7 @@ from .employment import charge_household_expense, pay_wages
 from .living import Recipe, meet, produce, propagate_information, recollect, tell, witness_event
 from .market import buy, refresh_market
 from .model import Actor, World
-from .simulation import _start_next_leg, tick
+from .simulation import _start_next_leg, route_path, tick
 
 
 @dataclass(frozen=True)
@@ -31,13 +31,45 @@ def _record_working_day(world: World, actor: Actor) -> bool:
     return bool(actor.work_hours_by_day.get(world.now.date().isoformat(), 0.0))
 
 
-def _bounded_encounters(world: World, location_id: str) -> None:
+def _bounded_encounters(world: World, location_id: str) -> tuple[tuple[str, str], ...]:
     patrons = [actor for actor in world.actors.values() if actor.location_id == location_id and actor.traveling_to is None]
     world.random.shuffle(patrons)
     # A social opportunity produces a small number of encounters.  It is not
     # a complete graph and it does not create knowledge by itself.
-    for first, second in zip(patrons[::2], patrons[1::2]):
+    encounters = tuple((first.id, second.id) for first, second in zip(patrons[::2], patrons[1::2]))
+    for first_id, second_id in encounters:
+        first, second = world.actors[first_id], world.actors[second_id]
         meet(world, first.id, second.id, location_id=location_id)
+    return encounters
+
+
+def _has_near_term_obligation(world: World, actor: Actor) -> bool:
+    if actor.current_activity and (actor.current_activity.startswith("work") or actor.current_activity.startswith("inspect")):
+        return True
+    if actor.schedule_override_until is not None and world.now < actor.schedule_override_until:
+        return True
+    hour = world.now.hour
+    return any(
+        entry.activity.startswith(("work", "inspect"))
+        and hour <= entry.start_hour <= hour + 2
+        for entry in actor.schedule
+    )
+
+
+def _food_trip_conflicts_with_work(world: World, actor: Actor, shop_id: str) -> bool:
+    hour = world.now.hour
+    starts = [
+        (entry.start_hour - hour) % 24 or 24
+        for entry in actor.schedule
+        if entry.activity.startswith(("work", "inspect")) and entry.start_hour != hour
+    ]
+    if not starts:
+        return False
+    residence_id = world.households[actor.household_id].residence_id if actor.household_id else actor.location_id
+    to_shop = route_path(world, actor.location_id, shop_id)
+    home_path = route_path(world, shop_id, residence_id)
+    travel_hours = sum(max(1.0, route.travel_days * 24.0) for route in [*to_shop, *home_path])
+    return travel_hours + 1 >= min(starts)
 
 
 def _adjudicate_food_need(world: World) -> None:
@@ -49,9 +81,19 @@ def _adjudicate_food_need(world: World) -> None:
         need = max(0.0, desired - held)
         for actor in members:
             actor.needs["food"] = need
-        if need <= 0 or any(actor.active_task == "acquire food" for actor in members):
+        if need <= 0 or any(actor.active_task in {"acquire food", "return with food"} for actor in members):
             continue
-        shopper = next((actor for actor in members if actor.traveling_to is None and actor.active_task is None), None)
+        shopper = next(
+            (
+                actor
+                for actor in members
+                if actor.traveling_to is None
+                and actor.active_task is None
+                and not _has_near_term_obligation(world, actor)
+                and not _food_trip_conflicts_with_work(world, actor, shop_id)
+            ),
+            None,
+        )
         if shopper is None:
             continue
         shopper.active_task = "acquire food"
@@ -75,7 +117,6 @@ def _complete_food_task(world: World, actor: Actor) -> None:
         if actor.money > 0:
             try:
                 buy(world, actor.id, market_id, "bread", 1)
-                world.transfer_goods("bread", 1, from_holder=actor.id, to_holder=household.id, to_owner=household.id, reason="shopper brought food home")
                 actor.active_task = "return with food"
                 actor.task_target_location_id = household.residence_id
                 actor.current_activity = actor.intention = "return with food"
@@ -90,6 +131,17 @@ def _complete_food_task(world: World, actor: Actor) -> None:
             world.record("need_unmet", f"{actor.id} had no cash for household food", actors=[actor.id], entities=[household.id])
         return
     if actor.active_task == "return with food" and actor.location_id == household.residence_id:
+        if world.quantity_held(actor.id, "bread") >= 1:
+            world.transfer_goods(
+                "bread",
+                1,
+                from_holder=actor.id,
+                to_holder=household.id,
+                to_owner=household.id,
+                reason="shopper delivered food home",
+            )
+        else:
+            world.record("need_unmet", f"{actor.id} returned without household food", actors=[actor.id], entities=[household.id])
         actor.active_task = None
         actor.task_target_location_id = None
         actor.current_activity = actor.intention = "at home"
@@ -199,14 +251,27 @@ def adjudicate_hour(world: World, *, external_events: Iterable[DockIncident] = (
     for actor in world.actors.values():
         _complete_food_task(world, actor)
         _consume_meal(world, actor)
-        if actor.current_activity == "visit tavern" and actor.location_id == "tavern" and actor.traveling_to is None:
-            _bounded_encounters(world, "tavern")
+    encounter_pairs: list[tuple[str, str]] = []
+    encounter_locations = {
+        actor.location_id
+        for actor in world.actors.values()
+        if actor.current_activity == "visit tavern" and actor.location_id == "tavern" and actor.traveling_to is None
+    }
+    for location_id in sorted(encounter_locations):
+        encounter_pairs.extend(_bounded_encounters(world, location_id))
+    world.runtime["active_encounters"] = tuple(encounter_pairs)
+    world.runtime["active_encounter_at"] = world.now
     if 18 <= world.now.hour < 22:
         patrons = [actor for actor in world.actors.values() if actor.location_id == "tavern" and actor.traveling_to is None]
         if patrons:
             propositions = {proposition for actor in patrons for proposition in actor.beliefs}
             for proposition in propositions:
-                propagate_information(world, proposition=proposition, location_id="tavern")
+                propagate_information(
+                    world,
+                    proposition=proposition,
+                    location_id="tavern",
+                    encounter_pairs=world.runtime.get("active_encounters", ()),
+                )
     if world.now.hour == 17:
         _adjudicate_businesses(world)
 

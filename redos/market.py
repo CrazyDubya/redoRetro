@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from .model import Actor, GoodType, Market, Place, Route, World
+from .simulation import route_path
 
 
 # The original BASIC game names these UR, MET, HE, MED, SOFT, and GEMS.  Its
@@ -66,6 +67,8 @@ def create_star_market(world: World, market_id: str, place_id: str, *, developme
         id=market_id,
         place_id=place_id,
         fixed_prices={good_id: base for good_id, _name, base, _weight in STAR_GOODS},
+        production_source=f"star-trader-aggregate:{market_id}",
+        production_account_id=market_id,
     )
     for index, (good_id, _name, _base, _weight) in enumerate(STAR_GOODS):
         # Star Trader's class I-IV descriptions collapse here to three
@@ -87,7 +90,20 @@ def seed_market_inventory(world: World, market_id: str) -> None:
     market = world.markets[market_id]
     for good_id, balance in market.balances.items():
         if balance > 0 and world.quantity_held(market.place_id, good_id) == 0:
-            world.create_lot(good_id, balance, holder_id=market.place_id, owner_id=market.place_id, provenance=(f"production:{market.id}",))
+            source = market.production_source or "unattributed"
+            event = world.record(
+                "aggregate_production",
+                f"{market.id} received initial {balance} {good_id} from {source}",
+                entities=[market.id, good_id],
+                data={"quantity": balance, "source": source, "account": market.production_account_id},
+            )
+            world.create_lot(
+                good_id,
+                balance,
+                holder_id=market.place_id,
+                owner_id=market.place_id,
+                provenance=(event.id, f"source:{market.production_account_id or source}"),
+            )
 
 
 def _market_price(world: World, market: Market, good_type_id: str) -> float:
@@ -116,7 +132,7 @@ def refresh_market(world: World, market_id: str, *, days: int = 1) -> None:
     if days < 0:
         raise ValueError("days cannot be negative")
     for good_id in market.balances:
-        production = market.production_rates.get(good_id, 0.0) * days
+        production = market.production_rates.get(good_id, 0.0) * days if market.production_source else 0.0
         demand = market.demand_rates.get(good_id, 0.0) * days
         market.balances[good_id] = world.quantity_held(market.place_id, good_id)
         market.demand_backlog[good_id] = max(0.0, market.demand_backlog.get(good_id, 0.0) + demand - production)
@@ -126,14 +142,22 @@ def refresh_market(world: World, market_id: str, *, days: int = 1) -> None:
     # number.  Demand consumes that stock only when a transaction occurs.
     for good_id, rate in market.production_rates.items():
         if rate > 0:
+            if not market.production_source or not market.production_account_id:
+                raise ValueError(f"{market.id} has unexplained production for {good_id}")
             quantity = rate * days
             production_event = world.record(
-                "market_production",
-                f"{market.id} produced {quantity} {good_id}",
+                "aggregate_production",
+                f"{market.id} received {quantity} {good_id} from {market.production_source}",
                 entities=[market.id, good_id],
-                data={"quantity": quantity},
+                data={"quantity": quantity, "source": market.production_source, "account": market.production_account_id},
             )
-            world.create_lot(good_id, quantity, holder_id=market.place_id, owner_id=market.place_id, provenance=(production_event.id,))
+            world.create_lot(
+                good_id,
+                quantity,
+                holder_id=market.place_id,
+                owner_id=market.place_id,
+                provenance=(production_event.id, f"source:{market.production_account_id}"),
+            )
             market.balances[good_id] = world.quantity_held(market.place_id, good_id)
     world.record("market_refresh", f"{market.id} refreshed for {days} day(s)", entities=[market_id])
 
@@ -210,8 +234,10 @@ def sell(world: World, seller_id: str, market_id: str, good_type_id: str, quanti
 def travel(world: World, actor_id: str, destination_id: str) -> int:
     from .simulation import walk
 
+    path = route_path(world, world.actors[actor_id].location_id, destination_id)
+    total_hours = sum(max(1.0, route.travel_days * 24.0) for route in path)
     movement = walk(world, actor_id, destination_id)
-    return int(movement.duration_hours // 24) if movement.duration_hours >= 24 else 0
+    return int((total_hours + 23.999999) // 24) if total_hours >= 24 else 0
 
 
 def bargain(target: float, offer: float, *, side: str, round_number: int, max_rounds: int = 3) -> bool:
@@ -229,7 +255,10 @@ def autonomous_trade(world: World, actor_id: str, origin_market: str, destinatio
     buy_quote = buy(world, actor_id, origin_market, good_type_id, quantity)
     days = travel(world, actor_id, destination)
     from .simulation import tick
-    while world.actors[actor_id].traveling_to is not None:
+    while (
+        world.actors[actor_id].traveling_to is not None
+        or world.actors[actor_id].journey_destination_id is not None
+    ):
         tick(world, 1)
     destination_market = next(market for market in world.markets.values() if market.place_id == destination)
     sell_quote = sell(world, actor_id, destination_market.id, good_type_id, quantity)
