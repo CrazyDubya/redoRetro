@@ -123,8 +123,8 @@ def _tick_step(world: World, hours: float) -> None:
                 employer_id = actor.employer_id
                 if employer_id and employer_id in world.businesses and (world.businesses[employer_id].location_id == actor.location_id or entry.activity.startswith("inspect")):
                     day_key = world.now.date().isoformat()
-                    actor.work_hours_by_day[day_key] = actor.work_hours_by_day.get(day_key, 0.0) + 1.0
-                    world.record("work", f"{actor.id} worked one qualifying hour", actors=[actor.id, employer_id], entities=[entry.target_location_id], data={"day": day_key, "hours": 1})
+                    actor.work_hours_by_day[day_key] = actor.work_hours_by_day.get(day_key, 0.0) + hours
+                    world.record("work", f"{actor.id} worked qualifying time", actors=[actor.id, employer_id], entities=[entry.target_location_id], data={"day": day_key, "hours": hours})
 
 
 def tick(world: World, hours: float = 1) -> None:

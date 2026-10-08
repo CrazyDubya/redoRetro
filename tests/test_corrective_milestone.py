@@ -5,7 +5,7 @@ from datetime import datetime
 from redos.audit import causal_chain, conservation_errors, market_balance_errors, validate_world
 from redos.bootstrap import build_tiny_world
 from redos.enterprise import allocate_contract, advance_shipments, create_contract, dispatch_contract, mule_bid, settle_contract
-from redos.living import Bid, auction, meet, propagate_information, recollect, tell, witness_event
+from redos.living import Bid, auction, meet, propagate_information, recollect, revise_belief, tell, witness_event
 from redos.market import autonomous_trade, buy, refresh_market, travel
 from redos.model import Actor, Place, Route
 from redos.employment import charge_household_expense, hire, pay_wages
@@ -292,6 +292,31 @@ class CorrectiveMilestoneTests(unittest.TestCase):
         self.assertEqual(len(second), 1)
         self.assertFalse(first[0].truthful)
         self.assertFalse(second[0].truthful)
+
+    def test_new_direct_observation_replaces_old_belief_provenance(self) -> None:
+        world = build_tiny_world()
+        for actor_id in ("a", "b", "c"):
+            world.add(Actor(actor_id, actor_id, "tavern"))
+        tell(world, "a", "b", "seal", "the seal broke", truthful=False)
+        revise_belief(
+            world,
+            "b",
+            "seal",
+            "the seal was intact",
+            truthful=True,
+            source_kind="observation",
+            source_id="observation-direct",
+        )
+        statements = propagate_information(world, proposition="seal", location_id="tavern", encounter_pairs=(("b", "c"),))
+        self.assertEqual(len(statements), 1)
+        self.assertTrue(statements[0].truthful)
+
+    def test_fractional_ticks_credit_actual_work_duration(self) -> None:
+        world = build_tiny_world()
+        actor = world.actors["cooper"]
+        actor.schedule = [ScheduleEntry(0, 24, "work", "workshop")]
+        tick(world, 1.5)
+        self.assertAlmostEqual(actor.work_hours_by_day["1770-01-01"], 1.5)
 
 
 if __name__ == "__main__":

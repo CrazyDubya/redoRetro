@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable
 
-from .model import EnvironmentCell, Observation, ScheduleEntry, Statement, World
+from .model import BeliefRevision, EnvironmentCell, Observation, ScheduleEntry, Statement, World
 
 
 @dataclass(frozen=True)
@@ -75,6 +75,31 @@ def recollect(world: World, observation_id: str, *, content: str, confidence: fl
     return observation
 
 
+def revise_belief(
+    world: World,
+    actor_id: str,
+    proposition: str,
+    content: str,
+    *,
+    truthful: bool,
+    source_kind: str,
+    source_id: str | None = None,
+) -> BeliefRevision:
+    """Replace one belief and its evidence as one canonical revision."""
+    revision = BeliefRevision(
+        proposition=proposition,
+        content=content,
+        truthful=truthful,
+        source_kind=source_kind,
+        source_id=source_id,
+        revised_at=world.now,
+    )
+    actor = world.actors[actor_id]
+    actor.beliefs[proposition] = content
+    actor.belief_provenance[proposition] = revision
+    return revision
+
+
 def tell(
     world: World,
     speaker_id: str,
@@ -98,7 +123,15 @@ def tell(
     )
     world.statements[statement.id] = statement
     listener = world.actors[listener_id]
-    listener.beliefs[proposition] = content
+    revise_belief(
+        world,
+        listener_id,
+        proposition,
+        content,
+        truthful=truthful,
+        source_kind="statement",
+        source_id=statement.id,
+    )
     listener.trust[speaker_id] = max(0.0, min(1.0, listener.trust.get(speaker_id, 0.5) + trust_delta))
     world.record(
         "statement",
@@ -135,14 +168,13 @@ def propagate_information(
     # statement received by this speaker, not a later statement they made.
     # This keeps false testimony false across arbitrarily many discrete hops.
     def belief_truthfulness(actor_id: str) -> bool:
-        return next(
-            (
-                statement.truthful
-                for statement in reversed(world.statements.values())
-                if statement.proposition == proposition and statement.listener_id == actor_id
-            ),
-            True,
-        )
+        actor = world.actors[actor_id]
+        revision = actor.belief_provenance.get(proposition)
+        if revision is not None and revision.content == actor.beliefs.get(proposition):
+            return revision.truthful
+        # Legacy/direct dictionary assignments have no evidence record.  Do
+        # not attach stale testimony from an older belief revision to them.
+        return True
 
     statements: list[Statement] = []
     for first_id, second_id in pairs:
