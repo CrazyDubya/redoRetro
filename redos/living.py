@@ -130,18 +130,20 @@ def propagate_information(
         for speaker_id, listener_id in encounter_pairs
         if speaker_id in present_ids and listener_id in present_ids and speaker_id != listener_id
     )
-    # Snapshot sources before any statement is made.  A belief acquired in
-    # this call is eligible for a later causal exchange, never as a new source
-    # in the same propagation pass.
-    sources = [
-        (speaker.id, speaker.beliefs[proposition], next(
-            (statement.truthful for statement in reversed(world.statements.values()) if statement.proposition == proposition and statement.listener_id == speaker.id),
+    # A speaker's current belief is separate from the provenance of the
+    # statement that produced it.  When a claim is relayed, follow the
+    # statement received by this speaker, not a later statement they made.
+    # This keeps false testimony false across arbitrarily many discrete hops.
+    def belief_truthfulness(actor_id: str) -> bool:
+        return next(
+            (
+                statement.truthful
+                for statement in reversed(world.statements.values())
+                if statement.proposition == proposition and statement.listener_id == actor_id
+            ),
             True,
-        ))
-        for speaker in present
-        if any(speaker.id in pair for pair in pairs)
-        if proposition in speaker.beliefs
-    ]
+        )
+
     statements: list[Statement] = []
     for first_id, second_id in pairs:
         first = world.actors[first_id]
@@ -155,10 +157,7 @@ def propagate_information(
         content = world.actors[speaker_id].beliefs[proposition]
         if listener.beliefs.get(proposition) == content:
             continue
-        source_truth = next(
-            (statement.truthful for statement in reversed(world.statements.values()) if statement.proposition == proposition and statement.speaker_id == speaker_id),
-            True,
-        )
+        source_truth = belief_truthfulness(speaker_id)
         statements.append(
             tell(
                 world,

@@ -63,8 +63,7 @@ def _start_next_leg(world: World, actor: Actor, target_id: str) -> bool:
     return True
 
 
-def tick(world: World, hours: int = 1) -> None:
-    """Advance the living world without a scripted protagonist."""
+def _tick_step(world: World, hours: float) -> None:
     if hours < 0:
         raise ValueError("hours cannot be negative")
     if hours == 0:
@@ -126,6 +125,23 @@ def tick(world: World, hours: int = 1) -> None:
                     day_key = world.now.date().isoformat()
                     actor.work_hours_by_day[day_key] = actor.work_hours_by_day.get(day_key, 0.0) + 1.0
                     world.record("work", f"{actor.id} worked one qualifying hour", actors=[actor.id, employer_id], entities=[entry.target_location_id], data={"day": day_key, "hours": 1})
+
+
+def tick(world: World, hours: float = 1) -> None:
+    """Advance the living world with tick-size-independent movement.
+
+    Large caller ticks are decomposed at the same adjudication boundary used
+    by the normal hourly runtime.  This lets a multi-leg journey consume all
+    available time, rather than waiting until the next external tick to start
+    its next route leg.
+    """
+    if hours < 0:
+        raise ValueError("hours cannot be negative")
+    remaining = float(hours)
+    while remaining > 1e-9:
+        step = min(1.0, remaining)
+        _tick_step(world, step)
+        remaining -= step
 
 
 def interrupt(

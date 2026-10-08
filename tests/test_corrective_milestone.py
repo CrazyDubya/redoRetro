@@ -1,4 +1,5 @@
 import unittest
+from copy import deepcopy
 from datetime import datetime
 
 from redos.audit import causal_chain, conservation_errors, market_balance_errors, validate_world
@@ -72,7 +73,8 @@ class CorrectiveMilestoneTests(unittest.TestCase):
         self.assertEqual(world.quantity_held(seller.id, "metals"), 0)
         self.assertEqual(world.quantity_held(buyer.id, "metals"), 0)
         self.assertEqual(world.shipments[contract.shipment_id].status, "returning")
-        advance_shipments(world, 24)
+        for _ in range(24):
+            advance_shipments(world, 1)
         self.assertEqual(world.shipments[contract.shipment_id].status, "returned")
         self.assertEqual(world.quantity_held(seller.id, "metals"), 1)
 
@@ -114,6 +116,25 @@ class CorrectiveMilestoneTests(unittest.TestCase):
         self.assertEqual(world.actors["merchant"].location_id, "shop")
         tick(world, 48)
         self.assertEqual(world.actors["merchant"].location_id, "north")
+
+    def test_bulk_and_hourly_ticks_complete_the_same_multileg_journey(self) -> None:
+        def prepare():
+            world = build_tiny_world()
+            world.routes.pop("shop-north")
+            world.add(Place("waypoint", "Way Point", 1))
+            world.add(Route("shop-waypoint", "shop", "waypoint", 1.0, 1))
+            world.add(Route("waypoint-north", "waypoint", "north", 1.0, 1))
+            travel(world, "merchant", "north")
+            return world
+
+        bulk = prepare()
+        hourly = prepare()
+        tick(bulk, 48)
+        for _ in range(48):
+            tick(hourly, 1)
+        self.assertEqual(bulk.actors["merchant"].location_id, "north")
+        self.assertEqual(hourly.actors["merchant"].location_id, "north")
+        self.assertEqual(bulk.actors["merchant"].journey_destination_id, hourly.actors["merchant"].journey_destination_id)
 
     def test_autonomous_trade_completes_all_route_legs(self) -> None:
         world = build_tiny_world()
@@ -165,10 +186,20 @@ class CorrectiveMilestoneTests(unittest.TestCase):
         world = build_tiny_world()
         market = world.markets["shop-market"]
         market.production_source = None
-        before = world.quantity_held(market.place_id, "medicine")
+        before_stock = world.quantity_held(market.place_id, "medicine")
+        before_balances = deepcopy(market.balances)
+        before_backlog = deepcopy(market.demand_backlog)
+        before_history = deepcopy(market.price_history)
+        before_day = market.last_updated_day
+        before_events = len(world.events)
         with self.assertRaises(ValueError):
             refresh_market(world, market.id)
-        self.assertEqual(world.quantity_held(market.place_id, "medicine"), before)
+        self.assertEqual(world.quantity_held(market.place_id, "medicine"), before_stock)
+        self.assertEqual(market.balances, before_balances)
+        self.assertEqual(market.demand_backlog, before_backlog)
+        self.assertEqual(market.price_history, before_history)
+        self.assertEqual(market.last_updated_day, before_day)
+        self.assertEqual(len(world.events), before_events)
 
     def test_encounters_are_bounded_and_information_uses_only_encounter_edges(self) -> None:
         world = build_tiny_world()
@@ -249,6 +280,18 @@ class CorrectiveMilestoneTests(unittest.TestCase):
         self.assertFalse(second)
         self.assertEqual(next(item for item in world.events if item.id == event.id).description, "a seal broke")
         self.assertNotEqual(world.actors["b"].beliefs["seal"], "the seal broke")
+
+    def test_false_testimony_keeps_provenance_across_multiple_relays(self) -> None:
+        world = build_tiny_world()
+        for actor_id in ("a", "b", "c", "d"):
+            world.add(Actor(actor_id, actor_id, "tavern"))
+        tell(world, "a", "b", "seal", "the seal broke", truthful=False)
+        first = propagate_information(world, proposition="seal", location_id="tavern", encounter_pairs=(("b", "c"),))
+        second = propagate_information(world, proposition="seal", location_id="tavern", encounter_pairs=(("c", "d"),))
+        self.assertEqual(len(first), 1)
+        self.assertEqual(len(second), 1)
+        self.assertFalse(first[0].truthful)
+        self.assertFalse(second[0].truthful)
 
 
 if __name__ == "__main__":
