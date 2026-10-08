@@ -233,6 +233,41 @@ class Shipment:
     elapsed_hours: float = 0.0
     cargo_lot_ids: list[str] = field(default_factory=list)
     status: str = "dispatched"
+    carrier_id: str | None = None
+    origin_facility_id: str | None = None
+    destination_facility_id: str | None = None
+    loading_remaining_hours: float = 0.0
+    unloading_remaining_hours: float = 0.0
+
+
+@dataclass
+class TransportAsset:
+    id: str
+    name: str
+    asset_type: str
+    location_id: str
+    owner_id: str
+    capacity: float
+    operator_id: str | None = None
+    condition: float = 1.0
+    fuel: float = 0.0
+    fuel_capacity: float = 0.0
+    fuel_burn_per_hour: float = 0.0
+    operating_cost_per_hour: float = 0.0
+    available: bool = True
+    assigned_shipment_id: str | None = None
+    accrued_operating_cost: float = 0.0
+
+
+@dataclass
+class TransportFacility:
+    id: str
+    place_id: str
+    handling_capacity: int
+    storage_access_id: str | None = None
+    queue: list[str] = field(default_factory=list)
+    arrival_queue: list[str] = field(default_factory=list)
+    active_shipments: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -296,6 +331,8 @@ class World:
         self.aggregate_populations: dict[str, AggregatePopulation] = {}
         self.movements: dict[str, Movement] = {}
         self.shipments: dict[str, Shipment] = {}
+        self.transport_assets: dict[str, TransportAsset] = {}
+        self.transport_facilities: dict[str, TransportFacility] = {}
         self.recipes: dict[str, list[Any]] = {}
         self.runtime: dict[str, Any] = {}
         self.events: list[CausalEvent] = []
@@ -324,6 +361,8 @@ class World:
             AggregatePopulation: self.aggregate_populations,
             Movement: self.movements,
             Shipment: self.shipments,
+            TransportAsset: self.transport_assets,
+            TransportFacility: self.transport_facilities,
         }.get(type(entity))
         if collection is None:
             raise TypeError(f"unsupported world entity: {type(entity)!r}")
@@ -377,6 +416,8 @@ class World:
             return holder_id
         if holder_id in self.households:
             return self.households[holder_id].residence_id
+        if holder_id in self.transport_assets:
+            return self.transport_assets[holder_id].location_id
         if holder_id in self.shipments:
             shipment = self.shipments[holder_id]
             if shipment.status == "delivered":
@@ -439,7 +480,14 @@ class World:
         return lot
 
     def _holder_exists(self, holder_id: str) -> bool:
-        return holder_id in self.actors or holder_id in self.businesses or holder_id in self.places or holder_id in self.households or holder_id in self.shipments
+        return (
+            holder_id in self.actors
+            or holder_id in self.businesses
+            or holder_id in self.places
+            or holder_id in self.households
+            or holder_id in self.shipments
+            or holder_id in self.transport_assets
+        )
 
     def _sync_market_balances(self, place_id: str) -> None:
         for market in self.markets.values():
