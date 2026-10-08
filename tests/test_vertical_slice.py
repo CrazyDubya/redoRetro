@@ -1,7 +1,7 @@
 import unittest
 
 from redos.audit import conservation_errors, information_graph, tavern_report, validate_world
-from redos.runtime import run
+from redos.runtime import advance_world, run
 from redos.vertical import build_integrated_world, default_dock_incident, run_autonomous_days
 from redos.simulation import tick
 
@@ -39,6 +39,25 @@ class IntegratedVerticalSliceTests(unittest.TestCase):
         self.assertGreaterEqual(len(set(beliefs)), 2)
         self.assertGreaterEqual(len(graph["observations"]), 2)
         self.assertGreaterEqual(len(graph["statements"]), 2)
+
+    def test_incident_initial_knowledge_is_limited_to_actual_witnesses(self) -> None:
+        slice_state = build_integrated_world()
+        incident = default_dock_incident(slice_state)
+        world = slice_state.world
+        for _ in range(4 * 24 + 13):
+            advance_world(world, 1, external_events=(incident,))
+
+        event = next(event for event in world.events if event.kind == "incident")
+        observed = {observation.witness_id for observation in world.observations.values() if observation.event_id == event.id}
+        physically_present = {
+            actor.id
+            for actor in world.actors.values()
+            if actor.location_id == "dock" and actor.traveling_to is None
+        }
+        self.assertTrue(observed)
+        self.assertEqual(observed, physically_present)
+        self.assertTrue(all(event.id in world.actors[actor_id].knowledge for actor_id in observed))
+        self.assertTrue(all(event.id not in actor.knowledge for actor in world.actors.values() if actor.id not in observed))
 
 
 if __name__ == "__main__":

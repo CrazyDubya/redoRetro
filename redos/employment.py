@@ -36,35 +36,55 @@ def pay_wages(world: World, employer_id: str, *, days: int = 1) -> float:
             continue
         qualifying_hours = actor.work_hours_by_day.get(day_key, 0.0)
         amount = opening.wage_per_day * days * min(1.0, qualifying_hours / max(1, opening.end_hour - opening.start_hour))
+        interruption_causes = [
+            event.id
+            for event in reversed(world.events)
+            if event.kind == "schedule_interrupted" and actor.id in event.actors
+        ][:1]
         if amount <= 0:
-            world.record("wage_missed", f"{actor_id} received no wages because no qualifying work was recorded", actors=[actor_id, employer_id], entities=[opening.id], data={"hours": qualifying_hours})
+            world.record(
+                "wage_missed",
+                f"{actor_id} received no wages because no qualifying work was recorded",
+                actors=[actor_id, employer_id],
+                entities=[opening.id],
+                causes=interruption_causes,
+                data={"hours": qualifying_hours},
+            )
             continue
-        world.pay(employer_id, actor_id, amount, reason="wages paid for recorded work")
+        world.pay(employer_id, actor_id, amount, causes=interruption_causes, reason="wages paid for recorded work")
         actor.paid_work_days.add(day_key)
         total += amount
     return total
 
 
-def charge_household_expense(world: World, actor_id: str, amount: float, *, expense: str, payee_id: str | None = None) -> None:
+def charge_household_expense(
+    world: World,
+    actor_id: str,
+    amount: float,
+    *,
+    expense: str,
+    payee_id: str | None = None,
+    causes: tuple[str, ...] = (),
+) -> None:
     actor = world.actors[actor_id]
     household = world.households.get(actor.household_id or "")
     payer_id = household.id if household is not None and household.cash >= amount else actor_id
     payer = household if payer_id == household.id else actor
     available = household.cash if household is not None and payer_id == household.id else actor.money
     if payee_id is not None and available >= amount:
-        world.pay(payer_id, payee_id, amount, reason=f"household expense: {expense}")
+        world.pay(payer_id, payee_id, amount, causes=causes, reason=f"household expense: {expense}")
     elif available >= amount:
         if household is not None and payer_id == household.id:
             household.cash -= amount
         else:
             actor.money -= amount
-        world.record("expense", f"{payer_id} paid {expense}", actors=[actor_id], entities=[payer_id], data={"amount": amount})
+        world.record("expense", f"{payer_id} paid {expense}", actors=[actor_id], entities=[payer_id], causes=causes, data={"amount": amount})
     else:
         if household is not None:
             household.debt += amount
         else:
             actor.debt += amount
-        world.record("debt", f"{payer_id} missed {expense}", actors=[actor_id], entities=[payer_id], data={"amount": amount})
+        world.record("debt", f"{payer_id} missed {expense}", actors=[actor_id], entities=[payer_id], causes=causes, data={"amount": amount})
 
 
 def age_one_year(world: World, actor_id: str) -> None:
