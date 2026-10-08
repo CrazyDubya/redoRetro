@@ -131,6 +131,13 @@ def refresh_market(world: World, market_id: str, *, days: int = 1) -> None:
     market = world.markets[market_id]
     if days < 0:
         raise ValueError("days cannot be negative")
+    # Validate all attribution before changing any published market state.
+    # Refresh is one canonical transition: an invalid aggregate producer must
+    # leave balances, demand, history, time, lots, and events untouched.
+    if any(rate > 0 for rate in market.production_rates.values()) and (
+        not market.production_source or not market.production_account_id
+    ):
+        raise ValueError(f"{market.id} has unexplained production")
     for good_id in market.balances:
         production = market.production_rates.get(good_id, 0.0) * days if market.production_source else 0.0
         demand = market.demand_rates.get(good_id, 0.0) * days
@@ -142,8 +149,6 @@ def refresh_market(world: World, market_id: str, *, days: int = 1) -> None:
     # number.  Demand consumes that stock only when a transaction occurs.
     for good_id, rate in market.production_rates.items():
         if rate > 0:
-            if not market.production_source or not market.production_account_id:
-                raise ValueError(f"{market.id} has unexplained production for {good_id}")
             quantity = rate * days
             production_event = world.record(
                 "aggregate_production",

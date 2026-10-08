@@ -158,7 +158,12 @@ def advance_shipments(world: World, hours: float = 1.0) -> list[str]:
             shipment.current_route_index += 1
             shipment.elapsed_hours = 0.0
         if shipment.current_route_index < len(shipment.route_ids):
-            shipment.status = "in_transit"
+            # Preserve a failed shipment's return state while it is still
+            # travelling back to the seller.  Reclassifying it as ordinary
+            # transit here would make the next arrival attempt delivery
+            # again, producing an endless return/failure cycle.
+            if shipment.status != "returning":
+                shipment.status = "in_transit"
             continue
         contract = world.contracts[shipment.contract_id]
         if shipment.status == "returning":
