@@ -4,7 +4,7 @@ from redos.bootstrap import build_tiny_world
 from redos.enterprise import create_contract
 from redos.model import TransportAsset, TransportFacility
 from redos.runtime import advance_world
-from redos.transport import add_asset, add_facility, advance_freight, dispatch_freight
+from redos.transport import add_asset, add_facility, advance_freight, assign_asset, dispatch_freight, replenish_asset, repair_asset
 
 
 class PortsOfCallTransportTests(unittest.TestCase):
@@ -177,9 +177,11 @@ class PortsOfCallTransportTests(unittest.TestCase):
         advance_freight(world, 1)
         advance_freight(world, 1)
         self.assertEqual(shipment.status, "failed")
-        self.assertTrue(asset.available)
+        self.assertFalse(asset.available)
         self.assertIsNone(asset.assigned_shipment_id)
         self.assertEqual(world.quantity_held(asset.id, "metals"), 1)
+        replenish_asset(world, asset.id, "fuel", 10)
+        self.assertTrue(asset.available)
 
     def test_overdue_carrier_delivery_records_deadline_miss(self) -> None:
         world, seller, buyer = self._world()
@@ -191,6 +193,45 @@ class PortsOfCallTransportTests(unittest.TestCase):
         advance_freight(world, 1)
         self.assertTrue(contract.late_reported)
         self.assertTrue(any(event.kind == "contract_late" and contract.id in event.entities for event in world.events))
+
+    def test_named_supply_dependency_can_disable_and_restore_a_carrier(self) -> None:
+        world, seller, buyer = self._world()
+        asset = world.transport_assets["harbor-sloop"]
+        asset.supplies = {"crew": 1}
+        asset.supply_capacity = {"crew": 1}
+        asset.supply_burn_per_hour = {"crew": 1}
+        contract = create_contract(world, seller.id, buyer.id, "metals", 1, 20, origin_id="shop", destination_id="warehouse", due_days=3)
+        shipment = dispatch_freight(world, contract.id, carrier_id=asset.id, origin_facility_id="shop-landing", destination_facility_id="warehouse-landing")
+        advance_freight(world, 1)
+        advance_freight(world, 2)
+        self.assertEqual(shipment.status, "failed")
+        self.assertFalse(asset.available)
+        self.assertEqual(asset.unavailable_reason, "carrier crew exhausted")
+        replenish_asset(world, asset.id, "crew", 1)
+        self.assertTrue(asset.available)
+        self.assertIsNone(asset.assigned_shipment_id)
+
+    def test_generic_assignment_blocks_freight_until_released(self) -> None:
+        world, seller, buyer = self._world()
+        asset = world.transport_assets["harbor-sloop"]
+        assign_asset(world, asset.id, "passenger-run-1", kind="passenger")
+        contract = create_contract(world, seller.id, buyer.id, "metals", 1, 20, origin_id="shop", destination_id="warehouse", due_days=3)
+        with self.assertRaises(ValueError):
+            dispatch_freight(world, contract.id, carrier_id=asset.id, origin_facility_id="shop-landing", destination_facility_id="warehouse-landing")
+        self.assertEqual(contract.status, "open")
+        self.assertEqual(len(world.shipments), 0)
+
+    def test_repair_restores_condition_gated_asset(self) -> None:
+        world, seller, buyer = self._world()
+        asset = world.transport_assets["harbor-sloop"]
+        asset.condition = 0
+        asset.available = False
+        with self.assertRaises(ValueError):
+            assign_asset(world, asset.id, "freight-1", kind="freight")
+        repair_asset(world, asset.id, 0.5)
+        self.assertTrue(asset.available)
+        assign_asset(world, asset.id, "freight-1", kind="freight")
+        self.assertFalse(asset.available)
 
 
 if __name__ == "__main__":

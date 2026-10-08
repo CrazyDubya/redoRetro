@@ -14,7 +14,16 @@ from .model import (
     World,
 )
 from .rules import Rule, RuleBook
-from .transport import add_asset, add_facility, advance_freight, dispatch_freight
+from .transport import (
+    add_asset,
+    add_facility,
+    advance_freight,
+    assign_asset,
+    dispatch_freight,
+    consume_asset_supply,
+    replenish_asset,
+    repair_asset,
+)
 from .vertical import SliceState, build_integrated_world, run_autonomous_days
 
 __all__ = [
@@ -37,5 +46,9 @@ __all__ = [
     "add_asset",
     "add_facility",
     "advance_freight",
+    "assign_asset",
     "dispatch_freight",
+    "consume_asset_supply",
+    "replenish_asset",
+    "repair_asset",
 ]

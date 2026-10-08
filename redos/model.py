@@ -250,13 +250,19 @@ class TransportAsset:
     capacity: float
     operator_id: str | None = None
     condition: float = 1.0
+    readiness: float = 1.0
     fuel: float = 0.0
     fuel_capacity: float = 0.0
     fuel_burn_per_hour: float = 0.0
+    supplies: dict[str, float] = field(default_factory=dict)
+    supply_capacity: dict[str, float] = field(default_factory=dict)
+    supply_burn_per_hour: dict[str, float] = field(default_factory=dict)
     operating_cost_per_hour: float = 0.0
     operating_cost_payee_id: str | None = None
     available: bool = True
     assigned_shipment_id: str | None = None
+    assignment_kind: str | None = None
+    unavailable_reason: str | None = None
     accrued_operating_cost: float = 0.0
     operating_cost_due: float = 0.0
 
