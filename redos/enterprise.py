@@ -141,8 +141,18 @@ def advance_shipments(world: World, hours: float = 1.0) -> list[str]:
     """Move contract cargo along routes without changing the global clock."""
     if hours < 0:
         raise ValueError("shipment time cannot move backwards")
+    # Carrier-backed shipments are owned by the Ports of Call transport
+    # authority.  The runtime enters through this function, so a shipment
+    # cannot be advanced once by the legacy holder-on-shipment engine and once
+    # by the carrier engine.
     delivered: list[str] = []
+    if any(shipment.carrier_id is not None and shipment.status not in {"delivered", "failed"} for shipment in world.shipments.values()):
+        from .transport import advance_freight
+
+        delivered.extend(advance_freight(world, hours))
     for shipment in list(world.shipments.values()):
+        if shipment.carrier_id is not None:
+            continue
         if shipment.status not in {"dispatched", "in_transit", "returning"}:
             continue
         remaining = hours
