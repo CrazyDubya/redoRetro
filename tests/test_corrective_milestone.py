@@ -1,15 +1,15 @@
 import unittest
 from datetime import datetime
 
-from redos.audit import conservation_errors, market_balance_errors, validate_world
+from redos.audit import causal_chain, conservation_errors, market_balance_errors, validate_world
 from redos.bootstrap import build_tiny_world
 from redos.enterprise import allocate_contract, advance_shipments, create_contract, dispatch_contract, mule_bid, settle_contract
 from redos.living import Bid, auction, propagate_information, recollect, tell, witness_event
 from redos.market import buy, travel
 from redos.model import Actor
-from redos.employment import hire, pay_wages
+from redos.employment import charge_household_expense, hire, pay_wages
 from redos.model import JobOpening, ScheduleEntry
-from redos.simulation import interrupt, tick
+from redos.simulation import interrupt, interrupt_for_family_problem, tick
 
 
 class CorrectiveMilestoneTests(unittest.TestCase):
@@ -126,6 +126,39 @@ class CorrectiveMilestoneTests(unittest.TestCase):
         self.assertLess(actor.work_hours_by_day["1770-01-01"], 20)
         self.assertLess(paid, 50)
         self.assertTrue(any(event.kind == "schedule_interrupted" for event in world.events))
+
+    def test_family_problem_flows_through_attendance_wages_and_household_debt(self) -> None:
+        world = build_tiny_world()
+        actor = world.actors["merchant"]
+        actor.money = 0
+        world.households[actor.household_id].cash = 0
+        actor.schedule = [ScheduleEntry(0, 24, "work", "shop")]
+        world.add(JobOpening("family-job", "shop-market-cashier", "shopkeeper", 50, 0, 24))
+        hire(world, actor.id, "family-job")
+        problem_id = interrupt_for_family_problem(
+            world,
+            actor.id,
+            "care for daughter",
+            "tavern",
+            hours=24,
+            description="daughter became ill",
+        )
+        for _ in range(8):
+            tick(world, 1)
+        pay_wages(world, "shop-market-cashier")
+        missed = next(event for event in world.events if event.kind == "wage_missed")
+        charge_household_expense(
+            world,
+            actor.id,
+            40,
+            expense="medical bill",
+            causes=(missed.id,),
+        )
+        debt = next(event for event in world.events if event.kind == "debt")
+        self.assertEqual(world.households[actor.household_id].debt, 40)
+        chain = causal_chain(world, debt.id)
+        self.assertEqual([event["kind"] for event in chain[:4]], ["debt", "wage_missed", "schedule_interrupted", "family_problem"])
+        self.assertEqual(chain[-1]["id"], problem_id)
 
     def test_statement_does_not_rewrite_truth_or_cascade_forever(self) -> None:
         world = build_tiny_world()

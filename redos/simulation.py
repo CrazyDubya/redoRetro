@@ -106,7 +106,16 @@ def tick(world: World, hours: int = 1) -> None:
                     world.record("work", f"{actor.id} worked one qualifying hour", actors=[actor.id, employer_id], entities=[entry.target_location_id], data={"day": day_key, "hours": 1})
 
 
-def interrupt(world: World, actor_id: str, activity: str, target_location_id: str, *, hours: int, reason: str) -> None:
+def interrupt(
+    world: World,
+    actor_id: str,
+    activity: str,
+    target_location_id: str,
+    *,
+    hours: int,
+    reason: str,
+    causes: Iterable[str] = (),
+) -> None:
     if hours <= 0:
         raise ValueError("an interruption must last at least one hour")
     actor = world.actors[actor_id]
@@ -114,7 +123,46 @@ def interrupt(world: World, actor_id: str, activity: str, target_location_id: st
     actor.temporary_activity = activity
     actor.temporary_target_location_id = target_location_id
     actor.intention = activity
-    world.record("schedule_interrupted", f"{actor_id} interrupted schedule for {activity}", actors=[actor_id], entities=[target_location_id], data={"reason": reason, "hours": hours})
+    world.record(
+        "schedule_interrupted",
+        f"{actor_id} interrupted schedule for {activity}",
+        actors=[actor_id],
+        entities=[target_location_id],
+        causes=causes,
+        data={"reason": reason, "hours": hours},
+    )
+
+
+def interrupt_for_family_problem(
+    world: World,
+    actor_id: str,
+    activity: str,
+    target_location_id: str,
+    *,
+    hours: int,
+    description: str,
+) -> str:
+    """Create a household problem that interrupts work through canonical state."""
+    actor = world.actors[actor_id]
+    household_id = actor.household_id
+    if household_id is None:
+        raise ValueError(f"{actor_id} does not belong to a household")
+    problem = world.record(
+        "family_problem",
+        description,
+        actors=[actor_id],
+        entities=[household_id],
+    )
+    interrupt(
+        world,
+        actor_id,
+        activity,
+        target_location_id,
+        hours=hours,
+        reason=description,
+        causes=[problem.id],
+    )
+    return problem.id
 
 
 def run_days(world: World, days: int) -> None:

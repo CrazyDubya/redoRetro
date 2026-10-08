@@ -18,9 +18,14 @@ The 30-day acceptance test verifies:
 - meetings, witness observations, recollection differences, statements, trust,
   and divergent beliefs;
 - an externally injected dock incident known initially only to actual witnesses;
+- ordinary role-based cargo duty provides plausible dock traffic without naming
+  witnesses in the incident fixture, and the integrated test checks immediate
+  knowledge against physical co-presence;
 - a naturally populated evening tavern whose patrons arrived through ordinary
   schedules rather than a test-time visitor list;
 - conservation and world-state validation after thirty days.
+- a family problem can interrupt attendance, reduce payroll, and produce a
+  causally linked downstream household debt decision.
 
 Run it with:
 

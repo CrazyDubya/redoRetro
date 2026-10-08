@@ -61,6 +61,7 @@ def _install_jobs(world: World) -> None:
         ("tavern-business", "server"),
         ("warehouse-business", "warehouse clerk"),
     )
+    dock_staff = []
     for index, actor_id in enumerate(f"citizen-{i}" for i in range(12)):
         actor = world.actors[actor_id]
         business_id, occupation = assignments[index % len(assignments)]
@@ -76,9 +77,15 @@ def _install_jobs(world: World) -> None:
         actor.schedule = [ScheduleEntry(0, 7, "sleep", residence), ScheduleEntry(7, 8, "eat", residence)]
         actor.schedule.append(ScheduleEntry(8, 16, "work", employer.location_id, priority=10, interruptible=False))
         if business_id == "warehouse-business":
-            actor.schedule.append(ScheduleEntry(11, 14, "inspect dock", "dock", priority=11))
+            dock_staff.append(actor)
         if index in {0, 3, 5, 8, 10}:
             actor.schedule.append(ScheduleEntry(18, 22, "visit tavern", "tavern"))
+    # Dock work is an ordinary warehouse duty, not an incident-specific list
+    # of witnesses.  Rotate two cargo clerks into the duty by seed; the
+    # external incident does not name or select either clerk.
+    for offset in range(min(2, len(dock_staff))):
+        dock_worker = dock_staff[(world.seed + offset) % len(dock_staff)]
+        dock_worker.schedule.append(ScheduleEntry(11, 14, "inspect dock", "dock", priority=11))
 
 
 def build_integrated_world(*, seed: int = 0) -> SliceState:
