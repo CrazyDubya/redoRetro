@@ -66,6 +66,18 @@ class Household:
     daily_expenses: float = 0.0
 
 
+@dataclass(frozen=True)
+class BeliefRevision:
+    """The evidence attached to one actor's current belief value."""
+
+    proposition: str
+    content: str
+    truthful: bool
+    source_kind: str
+    source_id: str | None
+    revised_at: datetime
+
+
 @dataclass
 class Actor:
     id: str
@@ -84,6 +96,7 @@ class Actor:
     intention: str | None = None
     knowledge: dict[str, Any] = field(default_factory=dict)
     beliefs: dict[str, str] = field(default_factory=dict)
+    belief_provenance: dict[str, BeliefRevision] = field(default_factory=dict)
     trust: dict[str, float] = field(default_factory=dict)
     relationships: dict[str, float] = field(default_factory=dict)
     schedule: list[ScheduleEntry] = field(default_factory=list)

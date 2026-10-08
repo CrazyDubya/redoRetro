@@ -14,7 +14,7 @@ from typing import Iterable
 
 from .enterprise import advance_shipments, compete, create_contract, dispatch_contract
 from .employment import charge_household_expense, pay_wages
-from .living import Recipe, meet, produce, propagate_information, recollect, tell, witness_event
+from .living import Recipe, meet, produce, propagate_information, recollect, revise_belief, tell, witness_event
 from .market import buy, refresh_market
 from .model import Actor, World
 from .simulation import _start_next_leg, route_path, tick
@@ -240,7 +240,15 @@ def _inject_external_event(world: World, incident: DockIncident) -> None:
             recollect(world, observation.id, content="I saw someone near the cargo seal", confidence=0.45)
         actor = world.actors[observation.witness_id]
         actor.knowledge[incident.proposition] = observation.id
-        actor.beliefs[incident.proposition] = world.observations[observation.id].recollection or observation.content
+        revise_belief(
+            world,
+            actor.id,
+            incident.proposition,
+            world.observations[observation.id].recollection or observation.content,
+            truthful=True,
+            source_kind="observation",
+            source_id=observation.id,
+        )
     seen.add(incident.proposition)
 
 
