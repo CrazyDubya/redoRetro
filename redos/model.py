@@ -254,9 +254,11 @@ class TransportAsset:
     fuel_capacity: float = 0.0
     fuel_burn_per_hour: float = 0.0
     operating_cost_per_hour: float = 0.0
+    operating_cost_payee_id: str | None = None
     available: bool = True
     assigned_shipment_id: str | None = None
     accrued_operating_cost: float = 0.0
+    operating_cost_due: float = 0.0
 
 
 @dataclass

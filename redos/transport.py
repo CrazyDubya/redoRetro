@@ -48,10 +48,6 @@ def dispatch_freight(
     if loading_hours <= 0 or unloading_hours <= 0:
         raise ValueError("handling times must be positive")
     contract = world.contracts[contract_id]
-    if contract.status == "open":
-        allocate_contract(world, contract_id)
-    if contract.status != "allocated":
-        raise ValueError(f"contract {contract_id} is not allocated")
     asset = world.transport_assets[carrier_id]
     origin = world.transport_facilities[origin_facility_id]
     destination = world.transport_facilities[destination_facility_id]
@@ -66,6 +62,10 @@ def dispatch_freight(
     path = route_path(world, contract.origin_id, contract.destination_id)
     if not path:
         raise ValueError("contract has no physical route")
+    if contract.status == "open":
+        allocate_contract(world, contract_id)
+    if contract.status != "allocated":
+        raise ValueError(f"contract {contract_id} is not allocated")
     shipment = Shipment(
         id=f"shipment-{len(world.shipments) + 1}",
         contract_id=contract.id,
@@ -80,6 +80,9 @@ def dispatch_freight(
         unloading_remaining_hours=unloading_hours,
     )
     world.add(shipment)
+    # Reserve at assignment time, not when loading eventually begins.
+    asset.assigned_shipment_id = shipment.id
+    asset.available = False
     origin.queue.append(shipment.id)
     contract.shipment_id = shipment.id
     queued = world.record(
@@ -112,6 +115,16 @@ def _fail(world: World, shipment: Shipment, reason: str) -> None:
     )
     contract.causal_event_ids.append(failed.id)
     shipment.status = "failed"
+    if shipment.carrier_id is not None and shipment.carrier_id in world.transport_assets:
+        asset = world.transport_assets[shipment.carrier_id]
+        asset.assigned_shipment_id = None
+        asset.available = True
+    for facility in world.transport_facilities.values():
+        if shipment.id in facility.queue:
+            facility.queue.remove(shipment.id)
+        if shipment.id in facility.arrival_queue:
+            facility.arrival_queue.remove(shipment.id)
+        _remove_active(facility, shipment.id)
 
 
 def _begin_unloading(world: World, shipment: Shipment) -> bool:
@@ -140,12 +153,54 @@ def _admit_arrivals(world: World) -> None:
                 _begin_unloading(world, shipment)
 
 
+def _admit_loads(world: World) -> None:
+    """Start only the work that was admitted at the beginning of this step."""
+    for facility in world.transport_facilities.values():
+        while facility.queue and len(facility.active_shipments) < facility.handling_capacity:
+            shipment_id = facility.queue.pop(0)
+            shipment = world.shipments[shipment_id]
+            if shipment.status != "queued":
+                continue
+            facility.active_shipments.append(shipment.id)
+            shipment.status = "loading"
+            world.record("loading_started", f"{shipment.id} began loading at {facility.id}", entities=[shipment.id, facility.id])
+
+
 def _settle_arrival(world: World, shipment: Shipment) -> None:
     contract = world.contracts[shipment.contract_id]
     asset = world.transport_assets[shipment.carrier_id or ""]
     buyer = world.businesses[contract.buyer_id]
     seller = world.businesses[contract.seller_id]
+    total = contract.quantity * contract.unit_price
+    if contract.due_at is not None and world.now > contract.due_at and not contract.late_reported:
+        late = world.record(
+            "contract_late",
+            f"{contract.id} missed its delivery deadline",
+            actors=[contract.seller_id, contract.buyer_id],
+            entities=[contract.id, shipment.id],
+            causes=contract.causal_event_ids[-1:],
+            data={"due_at": contract.due_at.isoformat(), "arrived_at": world.now.isoformat()},
+        )
+        contract.causal_event_ids.append(late.id)
+        contract.late_reported = True
+    # Validate both sides before mutating either side.  Failed settlement
+    # leaves the cargo aboard the carrier and never gives it to an insolvent
+    # buyer.
+    if buyer.cash + 1e-9 < total:
+        _fail(world, shipment, "buyer insolvent at delivery")
+        return
+    if world.quantity_held(asset.id, contract.good_type_id) + 1e-9 < contract.quantity:
+        _fail(world, shipment, "carrier cargo unavailable at unloading")
+        return
+    payment = None
     try:
+        payment = world.pay(
+            buyer.id,
+            seller.id,
+            total,
+            causes=contract.causal_event_ids[-1:],
+            reason=f"{contract.id} freight settlement",
+        )
         world.transfer_goods(
             contract.good_type_id,
             contract.quantity,
@@ -163,14 +218,11 @@ def _settle_arrival(world: World, shipment: Shipment) -> None:
             causes=contract.causal_event_ids[-1:],
         )
         contract.causal_event_ids.append(delivered.id)
-        payment = world.pay(
-            buyer.id,
-            seller.id,
-            contract.quantity * contract.unit_price,
-            causes=[delivered.id],
-            reason=f"{contract.id} freight settlement",
-        )
     except (KeyError, ValueError) as exc:
+        # The preflight above makes this path defensive.  If a future
+        # mutation fails after payment, reverse it before recording failure.
+        if payment is not None:
+            world.pay(seller.id, buyer.id, total, reason=f"reverse failed {contract.id} settlement")
         _fail(world, shipment, f"settlement unavailable: {exc}")
         return
     contract.status = "settled"
@@ -188,11 +240,10 @@ def _settle_arrival(world: World, shipment: Shipment) -> None:
     asset.available = True
 
 
-def advance_freight(world: World, hours: float = 1.0) -> list[str]:
-    """Advance queued/loading/sailing/unloading freight without changing time."""
-    if hours < 0:
-        raise ValueError("freight time cannot move backwards")
+def _advance_freight_step(world: World, hours: float) -> list[str]:
+    """Advance one shared handling/movement interval without changing time."""
     _admit_arrivals(world)
+    _admit_loads(world)
     settled: list[str] = []
     for shipment in list(world.shipments.values()):
         if shipment.carrier_id is None or shipment.status in {"delivered", "failed"}:
@@ -200,15 +251,6 @@ def advance_freight(world: World, hours: float = 1.0) -> list[str]:
         asset = world.transport_assets[shipment.carrier_id]
         origin = world.transport_facilities[shipment.origin_facility_id or ""]
         remaining = float(hours)
-        if shipment.status == "queued":
-            if len(origin.active_shipments) >= origin.handling_capacity:
-                continue
-            origin.queue.remove(shipment.id)
-            origin.active_shipments.append(shipment.id)
-            shipment.status = "loading"
-            asset.assigned_shipment_id = shipment.id
-            asset.available = False
-            world.record("loading_started", f"{shipment.id} began loading at {origin.id}", entities=[shipment.id, origin.id])
         if shipment.status == "loading":
             step = min(remaining, shipment.loading_remaining_hours)
             shipment.loading_remaining_hours -= step
@@ -246,7 +288,9 @@ def advance_freight(world: World, hours: float = 1.0) -> list[str]:
                         _fail(world, shipment, "carrier fuel exhausted")
                         break
                     asset.fuel -= fuel
-                asset.accrued_operating_cost += asset.operating_cost_per_hour * step
+                cost = asset.operating_cost_per_hour * step
+                asset.accrued_operating_cost += cost
+                asset.operating_cost_due += cost
                 shipment.elapsed_hours += step
                 remaining -= step
                 if shipment.elapsed_hours + 1e-9 < duration:
@@ -273,8 +317,32 @@ def advance_freight(world: World, hours: float = 1.0) -> list[str]:
                 f"{asset.id} accrued operating cost",
                 actors=[asset.owner_id],
                 entities=[asset.id, shipment.id],
-                data={"amount": asset.accrued_operating_cost},
+                data={"amount": asset.accrued_operating_cost, "outstanding": asset.operating_cost_due},
             )
+            if asset.operating_cost_payee_id is not None and asset.operating_cost_due > 0:
+                try:
+                    world.pay(
+                        asset.owner_id,
+                        asset.operating_cost_payee_id,
+                        asset.operating_cost_due,
+                        reason=f"{asset.id} operating cost",
+                    )
+                    asset.operating_cost_due = 0.0
+                except (KeyError, ValueError):
+                    pass
             asset.accrued_operating_cost = 0.0
     _admit_arrivals(world)
+    return settled
+
+
+def advance_freight(world: World, hours: float = 1.0) -> list[str]:
+    """Advance freight on a shared facility timeline without changing time."""
+    if hours < 0:
+        raise ValueError("freight time cannot move backwards")
+    settled: list[str] = []
+    remaining = float(hours)
+    while remaining > 1e-9:
+        step = min(1.0, remaining)
+        settled.extend(_advance_freight_step(world, step))
+        remaining -= step
     return settled
