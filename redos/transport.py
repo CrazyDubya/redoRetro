@@ -12,6 +12,13 @@ from .model import Shipment, TransportAsset, TransportFacility, World
 from .simulation import effective_route_hours, route_is_accessible, route_path
 
 
+PACE_MULTIPLIERS = {
+    "slow": 1.25,
+    "steady": 1.0,
+    "urgent": 0.85,
+}
+
+
 def add_asset(world: World, asset: TransportAsset) -> TransportAsset:
     if asset.capacity <= 0:
         raise ValueError("transport capacity must be positive")
@@ -130,10 +137,13 @@ def dispatch_freight(
     destination_facility_id: str,
     loading_hours: float = 1.0,
     unloading_hours: float = 1.0,
+    pace: str = "steady",
 ) -> Shipment:
     """Create a queued physical freight journey without moving the clock."""
     if loading_hours <= 0 or unloading_hours <= 0:
         raise ValueError("handling times must be positive")
+    if pace not in PACE_MULTIPLIERS:
+        raise ValueError(f"unknown freight pace {pace!r}")
     contract = world.contracts[contract_id]
     asset = world.transport_assets[carrier_id]
     origin = world.transport_facilities[origin_facility_id]
@@ -165,6 +175,7 @@ def dispatch_freight(
         destination_facility_id=destination.id,
         loading_remaining_hours=loading_hours,
         unloading_remaining_hours=unloading_hours,
+        pace=pace,
     )
     world.add(shipment)
     # Reserve at assignment time, not when loading eventually begins.
@@ -179,6 +190,76 @@ def dispatch_freight(
         causes=contract.causal_event_ids[-1:],
     )
     contract.causal_event_ids.append(queued.id)
+    return shipment
+
+
+def interrupt_freight(world: World, shipment_id: str, hours: float, *, reason: str, causes: tuple[str, ...] = ()) -> Shipment:
+    """Pause a physical journey without releasing its cargo or carrier."""
+    if hours <= 0:
+        raise ValueError("journey interruption must last at least one hour")
+    shipment = world.shipments[shipment_id]
+    if shipment.status in {"delivered", "failed"}:
+        raise ValueError("terminal journey cannot be interrupted")
+    shipment.delay_remaining_hours += hours
+    shipment.interruption_reason = reason
+    event = world.record(
+        "freight_interrupted",
+        f"{shipment.id} interrupted for {hours:g} hours",
+        entities=[shipment.id, *( [shipment.carrier_id] if shipment.carrier_id else [])],
+        causes=causes,
+        data={"hours": hours, "reason": reason},
+    )
+    world.contracts[shipment.contract_id].causal_event_ids.append(event.id)
+    return shipment
+
+
+def divert_freight(world: World, shipment_id: str, route_ids: tuple[str, ...], *, reason: str, causes: tuple[str, ...] = ()) -> Shipment:
+    """Replace the remaining route only at a physical route boundary."""
+    shipment = world.shipments[shipment_id]
+    if shipment.status in {"delivered", "failed", "unloading", "arrived_queue"}:
+        raise ValueError("journey cannot be diverted in its current state")
+    if not route_ids:
+        raise ValueError("diversion requires at least one route")
+    asset = world.transport_assets[shipment.carrier_id or ""]
+    if shipment.status == "in_transit" and shipment.elapsed_hours > 1e-9:
+        raise ValueError("journey can only divert between route legs")
+    start = asset.location_id
+    previous = start
+    for route_id in route_ids:
+        route = world.routes[route_id]
+        if route.origin_id != previous or not route_is_accessible(world, route, mode=asset.asset_type):
+            raise ValueError("diversion route is not physically available from the carrier")
+        previous = route.destination_id
+    if previous != shipment.destination_id:
+        raise ValueError("diversion must still reach the contracted destination")
+    prefix = shipment.route_ids[:shipment.current_route_index]
+    shipment.route_ids = tuple([*prefix, *route_ids])
+    shipment.current_route_index = len(prefix)
+    event = world.record(
+        "freight_diverted",
+        f"{shipment.id} diverted toward {shipment.destination_id}",
+        entities=[shipment.id, asset.id, *route_ids],
+        causes=causes,
+        data={"reason": reason},
+    )
+    world.contracts[shipment.contract_id].causal_event_ids.append(event.id)
+    return shipment
+
+
+def abandon_freight(world: World, shipment_id: str, *, reason: str, causes: tuple[str, ...] = ()) -> Shipment:
+    """Fail a journey while retaining an auditable physical cargo holder."""
+    shipment = world.shipments[shipment_id]
+    if shipment.status in {"delivered", "failed"}:
+        raise ValueError("terminal journey cannot be abandoned")
+    event = world.record(
+        "freight_abandoned",
+        f"{shipment.id} abandoned: {reason}",
+        entities=[shipment.id, *( [shipment.carrier_id] if shipment.carrier_id else [])],
+        causes=causes,
+        data={"reason": reason},
+    )
+    world.contracts[shipment.contract_id].causal_event_ids.append(event.id)
+    _fail(world, shipment, f"journey abandoned: {reason}")
     return shipment
 
 
@@ -336,6 +417,12 @@ def _advance_freight_step(world: World, hours: float) -> list[str]:
         asset = world.transport_assets[shipment.carrier_id]
         origin = world.transport_facilities[shipment.origin_facility_id or ""]
         remaining = float(hours)
+        if shipment.delay_remaining_hours > 0:
+            step = min(remaining, shipment.delay_remaining_hours)
+            shipment.delay_remaining_hours -= step
+            remaining -= step
+            if remaining <= 1e-9:
+                continue
         if shipment.status == "loading":
             step = min(remaining, shipment.loading_remaining_hours)
             shipment.loading_remaining_hours -= step
@@ -379,7 +466,7 @@ def _advance_freight_step(world: World, hours: float) -> list[str]:
                             data={"hazard": world.route_conditions.get(route.id).hazard if route.id in world.route_conditions else None},
                         )
                     break
-                duration = effective_route_hours(world, route, mode=asset.asset_type)
+                duration = effective_route_hours(world, route, mode=asset.asset_type) * PACE_MULTIPLIERS[shipment.pace]
                 available = duration - shipment.elapsed_hours
                 step = min(remaining, available)
                 if asset.fuel_capacity > 0 and not consume_asset_supply(

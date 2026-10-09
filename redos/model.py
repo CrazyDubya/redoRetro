@@ -256,6 +256,9 @@ class Shipment:
     destination_facility_id: str | None = None
     loading_remaining_hours: float = 0.0
     unloading_remaining_hours: float = 0.0
+    pace: str = "steady"
+    delay_remaining_hours: float = 0.0
+    interruption_reason: str | None = None
 
 
 @dataclass
