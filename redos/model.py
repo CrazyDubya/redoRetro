@@ -242,6 +242,7 @@ class Movement:
     progress: float = 0.0
     transport_asset_id: str | None = None
     movement_mode: str = "walk"
+    blocked_route_condition_id: str | None = None
 
 
 @dataclass
@@ -675,12 +676,15 @@ class World:
                 continue
             condition = self.route_conditions.get(movement.route_id)
             if condition is not None and not condition.accessible:
-                if not any(
-                    event.kind == "travel_delayed"
-                    and movement.id in event.entities
-                    and event.at == self.now
-                    for event in self.events
-                ):
+                condition_event_id = next(
+                    (
+                        event.id
+                        for event in reversed(self.events)
+                        if event.kind == "route_condition_changed" and movement.route_id in event.entities
+                    ),
+                    None,
+                )
+                if movement.blocked_route_condition_id != condition_event_id:
                     self.record(
                         "travel_delayed",
                         f"{movement.actor_id} delayed by route conditions",
@@ -693,7 +697,9 @@ class World:
                         )[:1],
                         data={"hazard": condition.hazard},
                     )
+                    movement.blocked_route_condition_id = condition_event_id
                 continue
+            movement.blocked_route_condition_id = None
             movement.elapsed_hours += hours
             movement.progress = min(1.0, movement.elapsed_hours / movement.duration_hours)
             actor = self.actors[movement.actor_id]

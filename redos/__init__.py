@@ -16,6 +16,7 @@ from .model import (
 )
 from .rules import Rule, RuleBook
 from .simulation import apply_transport_weather, effective_route_hours, set_route_condition
+from .harbor import build_harbor_world, harbor_audit
 from .transport import (
     add_asset,
     add_facility,
@@ -50,6 +51,8 @@ __all__ = [
     "apply_transport_weather",
     "effective_route_hours",
     "set_route_condition",
+    "build_harbor_world",
+    "harbor_audit",
     "SliceState",
     "build_integrated_world",
     "run_autonomous_days",
