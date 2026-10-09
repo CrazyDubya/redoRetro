@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from .enterprise import allocate_contract
 from .model import Shipment, TransportAsset, TransportFacility, World
-from .simulation import route_path
+from .simulation import effective_route_hours, route_is_accessible, route_path
 
 
 def add_asset(world: World, asset: TransportAsset) -> TransportAsset:
@@ -146,7 +146,7 @@ def dispatch_freight(
         raise ValueError("destination facility is not at the contract destination")
     if _asset_load(world, asset.id) + contract.quantity > asset.capacity + 1e-9:
         raise ValueError("carrier capacity exceeded")
-    path = route_path(world, contract.origin_id, contract.destination_id)
+    path = route_path(world, contract.origin_id, contract.destination_id, mode=asset.asset_type)
     if not path:
         raise ValueError("contract has no physical route")
     if contract.status == "open":
@@ -364,7 +364,22 @@ def _advance_freight_step(world: World, hours: float) -> list[str]:
                     _fail(world, shipment, "carrier condition unavailable")
                     break
                 route = world.routes[shipment.route_ids[shipment.current_route_index]]
-                duration = max(1.0, route.travel_days * 24.0)
+                if not route_is_accessible(world, route, mode=asset.asset_type):
+                    if not any(
+                        event.kind == "freight_delayed"
+                        and shipment.id in event.entities
+                        and event.at == world.now
+                        for event in world.events
+                    ):
+                        world.record(
+                            "freight_delayed",
+                            f"{shipment.id} delayed by route conditions",
+                            entities=[shipment.id, asset.id, route.id],
+                            causes=tuple(world.contracts[shipment.contract_id].causal_event_ids[-1:]),
+                            data={"hazard": world.route_conditions.get(route.id).hazard if route.id in world.route_conditions else None},
+                        )
+                    break
+                duration = effective_route_hours(world, route, mode=asset.asset_type)
                 available = duration - shipment.elapsed_hours
                 step = min(remaining, available)
                 if asset.fuel_capacity > 0 and not consume_asset_supply(
