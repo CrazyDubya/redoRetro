@@ -63,6 +63,10 @@ def add_facility(world: World, facility: TransportFacility) -> TransportFacility
         raise ValueError("facility handling capacity must be positive")
     if facility.place_id not in world.places:
         raise KeyError(facility.place_id)
+    if facility.storage_access_id is not None and not world._holder_exists(facility.storage_access_id):
+        raise KeyError(facility.storage_access_id)
+    if facility.storage_capacity is not None and facility.storage_capacity < 0:
+        raise ValueError("facility storage capacity cannot be negative")
     world.add(facility)
     return facility
 
@@ -822,6 +826,7 @@ def _settle_arrival(world: World, shipment: Shipment) -> None:
     asset = world.transport_assets[shipment.carrier_id or ""]
     buyer = world.businesses[contract.buyer_id]
     seller = world.businesses[contract.seller_id]
+    destination = world.transport_facilities[shipment.destination_facility_id or ""]
     total = contract.quantity * contract.unit_price
     if contract.due_at is not None and world.now > contract.due_at and not contract.late_reported:
         late = world.record(
@@ -843,6 +848,15 @@ def _settle_arrival(world: World, shipment: Shipment) -> None:
     if world.quantity_held(asset.id, contract.good_type_id) + 1e-9 < contract.quantity:
         _fail(world, shipment, "carrier cargo unavailable at unloading")
         return
+    storage_holder = destination.storage_access_id if (
+        destination.storage_access_id == buyer.id or buyer.kind in {"market", "warehouse"}
+    ) else None
+    delivery_holder = storage_holder or (buyer.location_id if buyer.kind in {"market", "shop"} else buyer.id)
+    if destination.storage_capacity is not None:
+        stored = sum(lot.quantity for lot in world.lots_held_by(delivery_holder))
+        if stored + contract.quantity > destination.storage_capacity + 1e-9:
+            _fail(world, shipment, "destination storage capacity exceeded")
+            return
     payment = None
     try:
         payment = world.pay(
@@ -852,7 +866,6 @@ def _settle_arrival(world: World, shipment: Shipment) -> None:
             causes=contract.causal_event_ids[-1:],
             reason=f"{contract.id} freight settlement",
         )
-        delivery_holder = buyer.location_id if buyer.kind in {"market", "shop"} else buyer.id
         world.transfer_goods(
             contract.good_type_id,
             contract.quantity,
@@ -870,6 +883,15 @@ def _settle_arrival(world: World, shipment: Shipment) -> None:
             causes=contract.causal_event_ids[-1:],
         )
         contract.causal_event_ids.append(delivered.id)
+        if buyer.kind == "market":
+            from .market import accept_market_delivery
+
+            market_id = next(
+                (market.id for market in world.markets.values() if market.place_id == buyer.location_id),
+                None,
+            )
+            if market_id is not None:
+                accept_market_delivery(world, market_id, contract.good_type_id, contract.quantity, causes=contract.causal_event_ids[-1:])
     except (KeyError, ValueError) as exc:
         # The preflight above makes this path defensive.  If a future
         # mutation fails after payment, reverse it before recording failure.

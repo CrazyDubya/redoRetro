@@ -202,6 +202,24 @@ def refresh_market(world: World, market_id: str, *, days: int = 1) -> None:
         raise
 
 
+def accept_market_delivery(world: World, market_id: str, good_type_id: str, quantity: float, *, causes: Iterable[str] = ()) -> float:
+    """Apply a physical delivery to the market's outstanding local demand."""
+    if quantity <= 0:
+        raise ValueError("market delivery quantity must be positive")
+    market = world.markets[market_id]
+    accepted = min(quantity, market.demand_backlog.get(good_type_id, 0.0))
+    if accepted > 0:
+        market.demand_backlog[good_type_id] -= accepted
+        world.record(
+            "market_delivery_accepted",
+            f"{market.id} accepted {accepted} {good_type_id}",
+            entities=[market.id, good_type_id],
+            causes=causes,
+            data={"quantity": accepted, "remaining_demand": market.demand_backlog[good_type_id]},
+        )
+    return accepted
+
+
 def _money_object(world: World, holder_id: str) -> Actor | object:
     if holder_id in world.actors:
         return world.actors[holder_id]

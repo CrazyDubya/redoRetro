@@ -480,6 +480,7 @@ class TransportFacility:
     place_id: str
     handling_capacity: int
     storage_access_id: str | None = None
+    storage_capacity: float | None = None
     queue: list[str] = field(default_factory=list)
     arrival_queue: list[str] = field(default_factory=list)
     active_shipments: list[str] = field(default_factory=list)
