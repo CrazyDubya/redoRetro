@@ -8,7 +8,7 @@ routes, and unloading/settlement occur only after physical arrival.
 from __future__ import annotations
 
 from .enterprise import allocate_contract
-from .model import Movement, Shipment, TransportAsset, TransportFacility, World
+from .model import Movement, Shipment, TransportAsset, TransportFacility, TransportService, World
 from .simulation import effective_route_hours, route_is_accessible, route_path
 
 
@@ -40,6 +40,171 @@ def add_facility(world: World, facility: TransportFacility) -> TransportFacility
         raise KeyError(facility.place_id)
     world.add(facility)
     return facility
+
+
+def add_service(world: World, service: TransportService) -> TransportService:
+    """Register an ordered vehicle service against an existing asset."""
+    if service.asset_id not in world.transport_assets:
+        raise KeyError(service.asset_id)
+    if len(service.stop_place_ids) < 2:
+        raise ValueError("a transport service requires at least two stops")
+    if any(place_id not in world.places for place_id in service.stop_place_ids):
+        raise KeyError("service stop is not a world place")
+    if service.dwell_hours < 0 or any(hours <= 0 for hours in service.timetable_hours):
+        raise ValueError("service timing must be non-negative and timetable hours positive")
+    if service.timetable_hours and len(service.timetable_hours) not in {len(service.stop_place_ids) - 1, len(service.stop_place_ids)}:
+        raise ValueError("timetable must describe each service leg")
+    if any(existing.asset_id == service.asset_id for existing in world.transport_services.values()):
+        raise ValueError(f"asset {service.asset_id} already has a transport service")
+    asset = world.transport_assets[service.asset_id]
+    if asset.assigned_shipment_id is not None:
+        raise ValueError("service asset is already assigned")
+    world.add(service)
+    world.record(
+        "transport_service_registered",
+        f"{service.id} registered orders for {asset.id}",
+        entities=[service.id, asset.id, *service.stop_place_ids],
+        data={"stops": service.stop_place_ids, "timetable_hours": service.timetable_hours},
+    )
+    return service
+
+
+def service_accepts(service: TransportService, good_type_id: str) -> bool:
+    """Return whether the service has declared an order for this cargo."""
+    return not service.accepted_good_type_ids or good_type_id in service.accepted_good_type_ids
+
+
+def _service_next_stop(service: TransportService) -> str:
+    return service.stop_place_ids[(service.current_stop_index + 1) % len(service.stop_place_ids)]
+
+
+def _begin_service_leg(world: World, service: TransportService) -> bool:
+    asset = world.transport_assets[service.asset_id]
+    if asset.assigned_shipment_id is not None or not asset.available:
+        service.status = "waiting_asset"
+        return False
+    current_stop = service.stop_place_ids[service.current_stop_index]
+    if asset.location_id != current_stop:
+        service.status = "waiting_asset"
+        world.record(
+            "transport_service_misaligned",
+            f"{service.id} is not at its ordered stop",
+            entities=[service.id, asset.id, current_stop, asset.location_id],
+        )
+        return False
+    next_stop = _service_next_stop(service)
+    path = route_path(world, current_stop, next_stop, mode=asset.asset_type)
+    if not path:
+        service.status = "blocked"
+        world.record(
+            "transport_service_blocked",
+            f"{service.id} has no accessible route to {next_stop}",
+            entities=[service.id, asset.id, current_stop, next_stop],
+        )
+        return False
+    service.route_ids = tuple(route.id for route in path)
+    service.route_index = 0
+    service.elapsed_hours = 0.0
+    service.status = "in_transit"
+    world.record(
+        "transport_service_departed",
+        f"{service.id} departed {current_stop} for {next_stop}",
+        entities=[service.id, asset.id, *service.route_ids],
+        data={"from": current_stop, "to": next_stop},
+    )
+    return True
+
+
+def _advance_service(world: World, service: TransportService, hours: float) -> None:
+    remaining = hours
+    while remaining > 1e-9:
+        asset = world.transport_assets[service.asset_id]
+        if service.status == "waiting_asset":
+            if asset.assigned_shipment_id is not None or not asset.available:
+                return
+            service.status = "ready"
+        if service.status == "blocked":
+            if _begin_service_leg(world, service):
+                continue
+            return
+        if service.status == "ready":
+            if not _begin_service_leg(world, service):
+                return
+        if service.status == "dwelling":
+            step = min(remaining, service.dwell_remaining_hours)
+            service.dwell_remaining_hours -= step
+            remaining -= step
+            if service.dwell_remaining_hours > 1e-9:
+                return
+            service.status = "ready"
+            continue
+        if service.status != "in_transit":
+            return
+        if asset.assigned_shipment_id is not None or not asset.available:
+            service.status = "waiting_asset"
+            return
+        if service.route_index >= len(service.route_ids):
+            service.status = "dwelling"
+            service.dwell_remaining_hours = service.dwell_hours
+            continue
+        route = world.routes[service.route_ids[service.route_index]]
+        if not route_is_accessible(world, route, mode=asset.asset_type):
+            service.status = "blocked"
+            world.record("transport_service_delayed", f"{service.id} waits on {route.id}", entities=[service.id, asset.id, route.id])
+            return
+        duration = effective_route_hours(world, route, mode=asset.asset_type)
+        available = max(0.0, duration - service.elapsed_hours)
+        if available <= 1e-9:
+            service.route_index += 1
+            service.elapsed_hours = 0.0
+            asset.location_id = route.destination_id
+            continue
+        step = min(remaining, available)
+        if asset.fuel_capacity > 0 and not consume_asset_supply(world, asset.id, "fuel", asset.fuel_burn_per_hour * step):
+            service.status = "waiting_asset"
+            world.record("transport_service_unavailable", f"{service.id} stopped because {asset.id} lacks fuel", entities=[service.id, asset.id])
+            return
+        for supply, burn_rate in asset.supply_burn_per_hour.items():
+            if not consume_asset_supply(world, asset.id, supply, burn_rate * step):
+                service.status = "waiting_asset"
+                return
+        asset.accrued_operating_cost += asset.operating_cost_per_hour * step
+        asset.operating_cost_due += asset.operating_cost_per_hour * step
+        service.elapsed_hours += step
+        remaining -= step
+        if service.elapsed_hours + 1e-9 < duration:
+            return
+        asset.location_id = route.destination_id
+        service.route_index += 1
+        service.elapsed_hours = 0.0
+        if service.route_index < len(service.route_ids):
+            continue
+        old_index = service.current_stop_index
+        service.current_stop_index = (service.current_stop_index + 1) % len(service.stop_place_ids)
+        if service.current_stop_index == 0:
+            service.completed_cycles += 1
+        service.dwell_remaining_hours = service.dwell_hours
+        service.status = "dwelling"
+        planned = service.timetable_hours[old_index % len(service.timetable_hours)] if service.timetable_hours else duration
+        service.late_hours += max(0.0, duration - planned)
+        world.record(
+            "transport_service_arrived",
+            f"{service.id} arrived at {asset.location_id}",
+            entities=[service.id, asset.id, asset.location_id],
+            data={"planned_hours": planned, "actual_hours": duration, "late_hours": max(0.0, duration - planned)},
+        )
+
+
+def advance_services(world: World, hours: float = 1.0) -> None:
+    """Advance ordered services without changing the global clock."""
+    if hours < 0:
+        raise ValueError("service time cannot move backwards")
+    remaining = float(hours)
+    while remaining > 1e-9:
+        step = min(1.0, remaining)
+        for service in world.transport_services.values():
+            _advance_service(world, service, step)
+        remaining -= step
 
 
 def board_passenger(world: World, actor_id: str, asset_id: str, destination_id: str) -> Movement:
@@ -128,7 +293,8 @@ def release_asset(
     # Cargo custody is deliberately separate from mechanical readiness.  A
     # carrier may be refuelled while still blocked from a new assignment until
     # its failed cargo is physically recovered.
-    if previous_kind == "freight" and start_reposition and asset.available and not asset.cargo_clearance_pending:
+    managed_by_service = any(service.asset_id == asset.id for service in world.transport_services.values())
+    if previous_kind == "freight" and start_reposition and asset.available and not asset.cargo_clearance_pending and not managed_by_service:
         _begin_reposition(world, asset)
     return asset
 
@@ -205,6 +371,7 @@ def dispatch_freight(
     pace: str = "steady",
     carrier_plan: tuple[str, ...] | None = None,
     relay_leg_counts: tuple[int, ...] | None = None,
+    service_id: str | None = None,
 ) -> Shipment:
     """Create a queued physical freight journey without moving the clock."""
     if loading_hours <= 0 or unloading_hours <= 0:
@@ -227,6 +394,18 @@ def dispatch_freight(
         raise ValueError("carrier and origin facility are not at the contract origin")
     if destination.place_id != contract.destination_id:
         raise ValueError("destination facility is not at the contract destination")
+    service = world.transport_services.get(service_id or "") if service_id else None
+    if service_id and service is None:
+        raise KeyError(service_id)
+    if service is not None:
+        if service.asset_id != carrier_id or service.status not in {"ready", "waiting_asset"}:
+            raise ValueError("service is not ready for this carrier")
+        if service.stop_place_ids[service.current_stop_index] != contract.origin_id:
+            raise ValueError("contract origin is not the service's current stop")
+        if _service_next_stop(service) != contract.destination_id:
+            raise ValueError("contract destination is not the service's next stop")
+        if not service_accepts(service, contract.good_type_id):
+            raise ValueError("service does not accept this cargo")
     if _asset_load(world, asset.id) + contract.quantity > asset.capacity + 1e-9:
         raise ValueError("carrier capacity exceeded")
     planned_carriers = tuple(carrier_plan or (carrier_id,))
@@ -271,10 +450,14 @@ def dispatch_freight(
         pace=pace,
         carrier_plan=planned_carriers,
         relay_leg_counts=planned_legs,
+        service_id=service_id,
     )
     world.add(shipment)
     # Reserve at assignment time, not when loading eventually begins.
     assign_asset(world, asset.id, shipment.id, kind="freight")
+    if service is not None:
+        service.status = "waiting_asset"
+        world.record("transport_service_cargo_assigned", f"{service.id} assigned {shipment.id}", entities=[service.id, shipment.id, asset.id])
     for relay_asset_id in planned_carriers[1:]:
         relay_asset = world.transport_assets[relay_asset_id]
         relay_asset.reserved_for_shipment_id = shipment.id
@@ -666,6 +849,20 @@ def _settle_arrival(world: World, shipment: Shipment) -> None:
     contract.causal_event_ids.append(settled.id)
     shipment.status = "delivered"
     _clear_relay_reservations(world, shipment)
+    if shipment.service_id is not None:
+        service = world.transport_services[shipment.service_id]
+        if _service_next_stop(service) == contract.destination_id:
+            previous_index = service.current_stop_index
+            service.current_stop_index = (service.current_stop_index + 1) % len(service.stop_place_ids)
+            if service.current_stop_index == 0:
+                service.completed_cycles += 1
+            service.status = "waiting_asset"
+            world.record(
+                "transport_service_cargo_arrived",
+                f"{service.id} completed its cargo leg",
+                entities=[service.id, shipment.id, asset.id, contract.destination_id],
+                data={"from_stop_index": previous_index, "to_stop_index": service.current_stop_index},
+            )
     release_asset(world, asset.id)
 
 
