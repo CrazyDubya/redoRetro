@@ -93,6 +93,8 @@ def assign_asset(world: World, asset_id: str, assignment_id: str, *, kind: str) 
     asset = world.transport_assets[asset_id]
     if not asset.available or asset.assigned_shipment_id is not None:
         raise ValueError(f"carrier {asset_id} is unavailable")
+    if asset.reserved_for_shipment_id not in {None, assignment_id}:
+        raise ValueError(f"carrier {asset_id} is reserved for another shipment")
     if asset.cargo_clearance_pending or _asset_load(world, asset.id) > 1e-9:
         raise ValueError(f"carrier {asset_id} still holds unresolved cargo")
     if asset.condition <= 0 or asset.readiness <= 0:
@@ -201,6 +203,8 @@ def dispatch_freight(
     loading_hours: float = 1.0,
     unloading_hours: float = 1.0,
     pace: str = "steady",
+    carrier_plan: tuple[str, ...] | None = None,
+    relay_leg_counts: tuple[int, ...] | None = None,
 ) -> Shipment:
     """Create a queued physical freight journey without moving the clock."""
     if loading_hours <= 0 or unloading_hours <= 0:
@@ -225,9 +229,29 @@ def dispatch_freight(
         raise ValueError("destination facility is not at the contract destination")
     if _asset_load(world, asset.id) + contract.quantity > asset.capacity + 1e-9:
         raise ValueError("carrier capacity exceeded")
-    path = route_path(world, contract.origin_id, contract.destination_id, mode=asset.asset_type)
+    planned_carriers = tuple(carrier_plan or (carrier_id,))
+    if not planned_carriers or planned_carriers[0] != carrier_id:
+        raise ValueError("carrier plan must begin with the dispatch carrier")
+    path = route_path(world, contract.origin_id, contract.destination_id, mode=None if carrier_plan else asset.asset_type)
     if not path:
         raise ValueError("contract has no physical route")
+    planned_legs = tuple(relay_leg_counts or (len(path),))
+    if len(planned_carriers) != len(planned_legs) or any(count <= 0 for count in planned_legs) or sum(planned_legs) != len(path):
+        raise ValueError("relay carrier plan must partition the physical route")
+    route_offset = 0
+    for plan_index, planned_id in enumerate(planned_carriers):
+        planned_asset = world.transport_assets.get(planned_id)
+        if planned_asset is None:
+            raise KeyError(planned_id)
+        if plan_index > 0:
+            if not planned_asset.available or planned_asset.assigned_shipment_id is not None or planned_asset.reserved_for_shipment_id is not None:
+                raise ValueError(f"relay carrier {planned_id} is unavailable")
+            if planned_asset.location_id != path[route_offset].origin_id:
+                raise ValueError(f"relay carrier {planned_id} is not at its handoff point")
+        for route in path[route_offset:route_offset + planned_legs[plan_index]]:
+            if not route_is_accessible(world, route, mode=planned_asset.asset_type):
+                raise ValueError(f"carrier {planned_id} cannot use route {route.id}")
+        route_offset += planned_legs[plan_index]
     if contract.status == "open":
         allocate_contract(world, contract_id)
     if contract.status != "allocated":
@@ -245,10 +269,21 @@ def dispatch_freight(
         loading_remaining_hours=loading_hours,
         unloading_remaining_hours=unloading_hours,
         pace=pace,
+        carrier_plan=planned_carriers,
+        relay_leg_counts=planned_legs,
     )
     world.add(shipment)
     # Reserve at assignment time, not when loading eventually begins.
     assign_asset(world, asset.id, shipment.id, kind="freight")
+    for relay_asset_id in planned_carriers[1:]:
+        relay_asset = world.transport_assets[relay_asset_id]
+        relay_asset.reserved_for_shipment_id = shipment.id
+        world.record(
+            "asset_relay_reserved",
+            f"{relay_asset.id} reserved for {shipment.id}",
+            entities=[relay_asset.id, shipment.id],
+            data={"handoff_place": relay_asset.location_id},
+        )
     origin.queue.append(shipment.id)
     contract.shipment_id = shipment.id
     queued = world.record(
@@ -337,6 +372,69 @@ def _remove_active(facility: TransportFacility, shipment_id: str) -> None:
         facility.active_shipments.remove(shipment_id)
 
 
+def _clear_relay_reservations(world: World, shipment: Shipment) -> None:
+    for asset_id in shipment.carrier_plan[shipment.carrier_plan_index + 1:]:
+        asset = world.transport_assets.get(asset_id)
+        if asset is not None and asset.reserved_for_shipment_id == shipment.id:
+            asset.reserved_for_shipment_id = None
+            world.record("asset_relay_reservation_cleared", f"{asset.id} released from {shipment.id}", entities=[asset.id, shipment.id])
+
+
+def _relay_boundary_reached(shipment: Shipment) -> bool:
+    if shipment.carrier_plan_index + 1 >= len(shipment.carrier_plan):
+        return False
+    boundary = sum(shipment.relay_leg_counts[:shipment.carrier_plan_index + 1])
+    return shipment.current_route_index >= boundary
+
+
+def _try_relay_handoff(world: World, shipment: Shipment) -> bool:
+    if not _relay_boundary_reached(shipment):
+        return True
+    current_asset = world.transport_assets[shipment.carrier_id or ""]
+    next_asset_id = shipment.carrier_plan[shipment.carrier_plan_index + 1]
+    next_asset = world.transport_assets[next_asset_id]
+    if (
+        next_asset.reserved_for_shipment_id != shipment.id
+        or not next_asset.available
+        or next_asset.assigned_shipment_id is not None
+        or next_asset.location_id != current_asset.location_id
+    ):
+        return False
+    contract = world.contracts[shipment.contract_id]
+    quantity = world.quantity_held(current_asset.id, contract.good_type_id)
+    if quantity > next_asset.capacity + 1e-9:
+        _fail(world, shipment, f"relay carrier {next_asset.id} capacity exceeded")
+        return False
+    release_asset(world, current_asset.id)
+    next_asset.reserved_for_shipment_id = None
+    assign_asset(world, next_asset.id, shipment.id, kind="freight")
+    world.transfer_goods(
+        contract.good_type_id,
+        contract.quantity,
+        from_holder=current_asset.id,
+        to_holder=next_asset.id,
+        to_owner=contract.seller_id,
+        causes=contract.causal_event_ids[-1:],
+        reason=f"{shipment.id} cargo handed off at {current_asset.location_id}",
+    )
+    # Releasing the old carrier while it still held cargo marks it as awaiting
+    # clearance.  The physical handoff has now completed, so it is safe to
+    # make that carrier available for another assignment.
+    current_asset.cargo_clearance_pending = _asset_load(world, current_asset.id) > 1e-9
+    shipment.carrier_id = next_asset.id
+    shipment.carrier_plan_index += 1
+    shipment.status = "in_transit"
+    event = world.record(
+        "freight_handoff",
+        f"{shipment.id} changed carriers at {current_asset.location_id}",
+        entities=[shipment.id, current_asset.id, next_asset.id, current_asset.location_id],
+        causes=contract.causal_event_ids[-1:],
+        data={"from_carrier": current_asset.id, "to_carrier": next_asset.id},
+    )
+    contract.causal_event_ids.append(event.id)
+    return True
+
+
 def _fail(world: World, shipment: Shipment, reason: str) -> None:
     contract = world.contracts[shipment.contract_id]
     contract.status = "failed"
@@ -351,6 +449,7 @@ def _fail(world: World, shipment: Shipment, reason: str) -> None:
     )
     contract.causal_event_ids.append(failed.id)
     shipment.status = "failed"
+    _clear_relay_reservations(world, shipment)
     if shipment.carrier_id is not None and shipment.carrier_id in world.transport_assets:
         asset = world.transport_assets[shipment.carrier_id]
         hold = "fuel" in reason or "condition" in reason or "supply" in reason or "exhausted" in reason
@@ -566,6 +665,7 @@ def _settle_arrival(world: World, shipment: Shipment) -> None:
     )
     contract.causal_event_ids.append(settled.id)
     shipment.status = "delivered"
+    _clear_relay_reservations(world, shipment)
     release_asset(world, asset.id)
 
 
@@ -584,6 +684,12 @@ def _advance_freight_step(world: World, hours: float) -> list[str]:
         origin = world.transport_facilities[shipment.origin_facility_id or ""]
         destination = world.transport_facilities[shipment.destination_facility_id or ""]
         remaining = float(hours)
+        if shipment.status == "handoff_wait":
+            if not _try_relay_handoff(world, shipment):
+                if shipment.status == "failed":
+                    continue
+                continue
+            asset = world.transport_assets[shipment.carrier_id or ""]
         if shipment.delay_remaining_hours > 0:
             step = min(remaining, shipment.delay_remaining_hours)
             shipment.delay_remaining_hours -= step
@@ -616,6 +722,17 @@ def _advance_freight_step(world: World, hours: float) -> list[str]:
             contract.causal_event_ids.append(departed.id)
         if shipment.status == "in_transit":
             while remaining > 1e-9 and shipment.current_route_index < len(shipment.route_ids):
+                if not _try_relay_handoff(world, shipment):
+                    if shipment.status == "failed":
+                        break
+                    shipment.status = "handoff_wait"
+                    world.record(
+                        "freight_handoff_waiting",
+                        f"{shipment.id} waiting for its next carrier",
+                        entities=[shipment.id, shipment.carrier_id or ""],
+                    )
+                    break
+                asset = world.transport_assets[shipment.carrier_id or ""]
                 if asset.condition <= 0:
                     _fail(world, shipment, "carrier condition unavailable")
                     break
