@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import math
 
 from .model import Business, InsuranceClaim, InsurancePolicy, World
 
@@ -38,7 +39,15 @@ def issue_policy(
     _money_holder(world, policyholder_id)
     if region_id not in world.places:
         raise KeyError(region_id)
-    if not line or premium <= 0 or coverage_limit <= 0 or deductible < 0 or deductible >= coverage_limit or term_days <= 0:
+    if (
+        not line
+        or not all(math.isfinite(value) for value in (premium, coverage_limit, deductible))
+        or premium <= 0
+        or coverage_limit <= 0
+        or deductible < 0
+        or deductible >= coverage_limit
+        or term_days <= 0
+    ):
         raise ValueError("invalid insurance terms")
     policy_id = policy_id or f"policy-{len(world.insurance_policies) + 1}"
     if policy_id in world.insurance_policies:
@@ -70,18 +79,25 @@ def issue_policy(
 
 def file_claim(world: World, policy_id: str, *, loss_event_id: str, loss_amount: float, claim_id: str | None = None) -> InsuranceClaim:
     policy = world.insurance_policies[policy_id]
-    if policy.status != "active" or world.now > policy.expires_at:
+    if policy.status != "active":
         raise ValueError("policy is not active")
     event = next((event for event in world.events if event.id == loss_event_id), None)
     if event is None:
         raise KeyError(loss_event_id)
+    if event.at < policy.issued_at or event.at > policy.expires_at or event.at > world.now:
+        raise ValueError("loss did not occur during the policy coverage period")
     if policy.policyholder_id not in event.actors and policy.policyholder_id not in event.entities:
         raise ValueError("loss event is not linked to the policyholder")
-    if loss_amount <= 0:
+    if not math.isfinite(loss_amount) or loss_amount <= 0:
         raise ValueError("loss must be positive")
     claim_id = claim_id or f"claim-{len(world.insurance_claims) + 1}"
     if claim_id in world.insurance_claims:
         raise ValueError(f"insurance claim {claim_id} already exists")
+    if any(
+        claim.policy_id == policy.id and claim.loss_event_id == loss_event_id
+        for claim in world.insurance_claims.values()
+    ):
+        raise ValueError("a claim already exists for this loss under this policy")
     indemnity = min(max(0.0, loss_amount - policy.deductible), policy.coverage_limit)
     claim = InsuranceClaim(
         id=claim_id,
@@ -146,7 +162,12 @@ def settle_claim(world: World, claim_id: str) -> float:
 def insurer_exposure(world: World, insurer_id: str) -> dict[str, float]:
     _insurer(world, insurer_id)
     active = [policy for policy in world.insurance_policies.values() if policy.insurer_id == insurer_id and policy.status == "active" and world.now <= policy.expires_at]
-    open_claims = [claim for claim in world.insurance_claims.values() if claim.policy_id in {policy.id for policy in active} and claim.status == "approved"]
+    insured_policy_ids = {policy.id for policy in world.insurance_policies.values() if policy.insurer_id == insurer_id}
+    open_claims = [
+        claim
+        for claim in world.insurance_claims.values()
+        if claim.policy_id in insured_policy_ids and claim.status == "approved"
+    ]
     return {
         "premium_income": sum(policy.premium for policy in active),
         "coverage_limit": sum(policy.coverage_limit for policy in active),

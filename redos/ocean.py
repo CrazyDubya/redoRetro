@@ -8,6 +8,7 @@ contract and freight authorities; this module owns no cargo or clock.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 
 from .enterprise import create_contract
 from .market import quote
@@ -48,18 +49,22 @@ def quote_ocean_trade(
     fuel_price: float = 0.0,
 ) -> OceanTradeQuote:
     """Quote a physically possible port-to-port cargo opportunity."""
-    if fuel_price < 0:
+    if not math.isfinite(fuel_price) or fuel_price < 0:
         raise ValueError("fuel price cannot be negative")
     origin_market = world.markets[origin_market_id]
     destination_market = world.markets[destination_market_id]
     asset = world.transport_assets[carrier_id]
+    if not asset.available or asset.assigned_shipment_id is not None or asset.reserved_for_shipment_id is not None:
+        raise ValueError("carrier is not available for booking")
+    if asset.condition <= 0 or asset.readiness <= 0:
+        raise ValueError("carrier is not operational")
     path = route_path(world, origin_market.place_id, destination_market.place_id, mode=asset.asset_type)
     if not path:
         raise ValueError("carrier has no accessible route between the markets")
     available = world.quantity_held(origin_market.place_id, good_type_id)
     capacity = max(0.0, asset.capacity - sum(lot.quantity for lot in world.lots_held_by(asset.id)))
     requested = min(available, capacity) if quantity is None else quantity
-    if requested <= 0 or requested > available + 1e-9 or requested > capacity + 1e-9:
+    if not math.isfinite(requested) or requested <= 0 or requested > available + 1e-9 or requested > capacity + 1e-9:
         raise ValueError("requested trade quantity exceeds physical stock or carrier capacity")
     buy_price = quote(world, origin_market_id, good_type_id, requested, side="buy").unit_price
     sell_price = quote(world, destination_market_id, good_type_id, requested, side="sell").unit_price
@@ -138,16 +143,32 @@ def book_ocean_trade(
         destination_id=destination_place,
         due_days=due_days,
     )
-    shipment = dispatch_freight(
-        world,
-        contract.id,
-        carrier_id=trade.carrier_id,
-        origin_facility_id=origin_facility_id,
-        destination_facility_id=destination_facility_id,
-        loading_hours=loading_hours,
-        unloading_hours=unloading_hours,
-        service_id=service_id,
-    )
+    try:
+        shipment = dispatch_freight(
+            world,
+            contract.id,
+            carrier_id=trade.carrier_id,
+            origin_facility_id=origin_facility_id,
+            destination_facility_id=destination_facility_id,
+            loading_hours=loading_hours,
+            unloading_hours=unloading_hours,
+            service_id=service_id,
+        )
+    except Exception as exc:
+        # A booking that cannot be physically dispatched is a failed
+        # commercial obligation, not an orphan open contract.
+        contract.status = "failed"
+        contract.failure_reason = f"ocean booking rejected: {exc}"
+        failed = world.record(
+            "contract_failed",
+            f"{contract.id} ocean booking failed",
+            actors=[seller_id, buyer_id],
+            entities=[contract.id],
+            causes=contract.causal_event_ids[-1:],
+            data={"reason": contract.failure_reason},
+        )
+        contract.causal_event_ids.append(failed.id)
+        raise
     world.record(
         "ocean_trade_booked",
         f"{trade.good_type_id} booked from {origin_place} to {destination_place}",

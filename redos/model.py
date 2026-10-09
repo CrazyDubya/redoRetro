@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import random
+import math
 from typing import Any, Iterable
 
 
@@ -699,7 +700,7 @@ class World:
         provenance: Iterable[str] = (),
         counts_as_creation: bool = True,
     ) -> InventoryLot:
-        if quantity <= 0:
+        if not math.isfinite(quantity) or quantity <= 0:
             raise ValueError("lot quantity must be positive")
         if good_type_id not in self.goods:
             raise KeyError(good_type_id)
@@ -749,7 +750,7 @@ class World:
         causes: Iterable[str] = (),
         reason: str = "goods transferred",
     ) -> list[InventoryLot]:
-        if quantity <= 0:
+        if not math.isfinite(quantity) or quantity <= 0:
             raise ValueError("transfer quantity must be positive")
         available = self.quantity_held(from_holder, good_type_id)
         if available + 1e-9 < quantity:
@@ -1024,18 +1025,28 @@ class World:
         return arrived
 
     def pay(self, payer_id: str, payee_id: str, amount: float, *, causes: Iterable[str] = (), reason: str = "payment") -> CausalEvent:
-        if amount < 0:
+        if not math.isfinite(amount) or amount < 0:
             raise ValueError("payment cannot be negative")
         payer = self.actors.get(payer_id) or self.businesses.get(payer_id) or self.households.get(payer_id)
         payee = self.actors.get(payee_id) or self.businesses.get(payee_id) or self.households.get(payee_id)
         if payer is None or payee is None:
             raise KeyError("money must move between an actor or business")
         money_field = "money" if isinstance(payer, Actor) else "cash"
-        if getattr(payer, money_field) + 1e-9 < amount:
+        payer_balance = getattr(payer, money_field)
+        if not math.isfinite(payer_balance):
+            raise ValueError(f"{payer_id} has non-finite cash")
+        if payer_balance + 1e-9 < amount:
             raise ValueError(f"{payer_id} cannot pay {amount}")
-        setattr(payer, money_field, getattr(payer, money_field) - amount)
+        payer_after = payer_balance - amount
         money_field = "money" if isinstance(payee, Actor) else "cash"
-        setattr(payee, money_field, getattr(payee, money_field) + amount)
+        payee_balance = getattr(payee, money_field)
+        if not math.isfinite(payer_after):
+            raise ValueError(f"{payer_id} payment would become non-finite")
+        if not math.isfinite(payee_balance) or not math.isfinite(payee_balance + amount):
+            raise ValueError(f"{payee_id} has non-finite cash")
+        payer_field = "money" if isinstance(payer, Actor) else "cash"
+        setattr(payer, payer_field, payer_after)
+        setattr(payee, money_field, payee_balance + amount)
         return self.record(
             "payment",
             reason,

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from .ocean import OceanTradeQuote, select_ocean_trade
 from .model import World
+from .transport import service_accepts
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,7 @@ def evaluate_merchant_route(
     if any(world.markets[market_id].place_id != place_id for market_id, place_id in zip(market_ids, service.stop_place_ids)):
         raise ValueError("merchant markets must correspond to service stops")
     legs: list[MerchantRouteLeg] = []
+    eligible_goods = tuple(good_id for good_id in good_type_ids if service_accepts(service, good_id))
     for index, origin_market_id in enumerate(market_ids):
         destination_market_id = market_ids[(index + 1) % len(market_ids)]
         trade = select_ocean_trade(
@@ -40,7 +42,7 @@ def evaluate_merchant_route(
             origin_market_id,
             destination_market_id,
             service.asset_id,
-            good_type_ids,
+            eligible_goods,
             fuel_price=fuel_price,
         )
         if trade is not None and trade.expected_margin > 0:
