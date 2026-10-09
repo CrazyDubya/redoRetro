@@ -42,6 +42,7 @@ from .bank import (
 )
 from .insurance import approve_claim, file_claim, insurer_exposure, issue_policy, settle_claim
 from .insider import buy_information, execute_trade, issue_security, portfolio_value, publish_wire_event
+from .ocean import OceanTradeQuote, book_ocean_trade, quote_ocean_trade, select_ocean_trade
 from .realestate import add_property, buy_property, collect_rent, lease_property, update_property_market
 from .derby import add_horse, race_horses, train_horse
 from .transport import (
@@ -119,6 +120,10 @@ __all__ = [
     "publish_wire_event",
     "buy_information",
     "portfolio_value",
+    "OceanTradeQuote",
+    "quote_ocean_trade",
+    "select_ocean_trade",
+    "book_ocean_trade",
     "add_property",
     "buy_property",
     "collect_rent",
