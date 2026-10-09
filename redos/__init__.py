@@ -22,6 +22,9 @@ from .transport import (
     assign_asset,
     dispatch_freight,
     consume_asset_supply,
+    interrupt_freight,
+    divert_freight,
+    abandon_freight,
     replenish_asset,
     repair_asset,
 )
@@ -51,6 +54,9 @@ __all__ = [
     "assign_asset",
     "dispatch_freight",
     "consume_asset_supply",
+    "interrupt_freight",
+    "divert_freight",
+    "abandon_freight",
     "replenish_asset",
     "repair_asset",
 ]
