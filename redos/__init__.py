@@ -17,6 +17,7 @@ from .model import (
 from .rules import Rule, RuleBook
 from .simulation import apply_transport_weather, effective_route_hours, set_route_condition
 from .harbor import build_harbor_world, harbor_audit
+from .equestrian import care_for_horse, ride
 from .transport import (
     add_asset,
     add_facility,
@@ -54,6 +55,8 @@ __all__ = [
     "set_route_condition",
     "build_harbor_world",
     "harbor_audit",
+    "care_for_horse",
+    "ride",
     "SliceState",
     "build_integrated_world",
     "run_autonomous_days",
