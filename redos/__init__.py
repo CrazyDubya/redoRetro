@@ -11,6 +11,7 @@ from .model import (
     Route,
     RouteCondition,
     HorseState,
+    Property,
     TransportAsset,
     TransportFacility,
     World,
@@ -20,6 +21,7 @@ from .simulation import apply_transport_weather, effective_route_hours, set_rout
 from .harbor import build_harbor_world, harbor_audit
 from .equestrian import care_for_horse, ride
 from .enterprise import invest_in_capacity
+from .realestate import add_property, buy_property, collect_rent, lease_property, update_property_market
 from .derby import add_horse, race_horses, train_horse
 from .transport import (
     add_asset,
@@ -49,6 +51,7 @@ __all__ = [
     "Route",
     "RouteCondition",
     "HorseState",
+    "Property",
     "TransportAsset",
     "TransportFacility",
     "World",
@@ -65,6 +68,11 @@ __all__ = [
     "race_horses",
     "train_horse",
     "invest_in_capacity",
+    "add_property",
+    "buy_property",
+    "collect_rent",
+    "lease_property",
+    "update_property_market",
     "SliceState",
     "build_integrated_world",
     "run_autonomous_days",
