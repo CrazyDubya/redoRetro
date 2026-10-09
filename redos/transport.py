@@ -496,12 +496,15 @@ def _advance_freight_step(world: World, hours: float) -> list[str]:
                     break
                 route = world.routes[shipment.route_ids[shipment.current_route_index]]
                 if not route_is_accessible(world, route, mode=asset.asset_type):
-                    if not any(
-                        event.kind == "freight_delayed"
-                        and shipment.id in event.entities
-                        and event.at == world.now
-                        for event in world.events
-                    ):
+                    condition_event_id = next(
+                        (
+                            event.id
+                            for event in reversed(world.events)
+                            if event.kind == "route_condition_changed" and route.id in event.entities
+                        ),
+                        None,
+                    )
+                    if shipment.interruption_reason != f"route:{condition_event_id}":
                         condition_causes = tuple(
                             event.id
                             for event in reversed(world.events)
@@ -514,7 +517,10 @@ def _advance_freight_step(world: World, hours: float) -> list[str]:
                             causes=tuple(world.contracts[shipment.contract_id].causal_event_ids[-1:]) + condition_causes,
                             data={"hazard": world.route_conditions.get(route.id).hazard if route.id in world.route_conditions else None},
                         )
+                        shipment.interruption_reason = f"route:{condition_event_id}"
                     break
+                if shipment.interruption_reason and shipment.interruption_reason.startswith("route:"):
+                    shipment.interruption_reason = None
                 duration = effective_route_hours(world, route, mode=asset.asset_type) * PACE_MULTIPLIERS[shipment.pace]
                 available = duration - shipment.elapsed_hours
                 step = min(remaining, available)
