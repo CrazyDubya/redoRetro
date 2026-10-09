@@ -17,6 +17,8 @@ from .model import (
     TransportAsset,
     TransportFacility,
     World,
+    InsuranceClaim,
+    InsurancePolicy,
 )
 from .rules import Rule, RuleBook
 from .simulation import apply_transport_weather, effective_route_hours, set_route_condition
@@ -34,6 +36,7 @@ from .bank import (
     repay_loan,
     withdraw,
 )
+from .insurance import approve_claim, file_claim, insurer_exposure, issue_policy, settle_claim
 from .realestate import add_property, buy_property, collect_rent, lease_property, update_property_market
 from .derby import add_horse, race_horses, train_horse
 from .transport import (
@@ -57,6 +60,8 @@ __all__ = [
     "Actor",
     "BankAccount",
     "BankLoan",
+    "InsurancePolicy",
+    "InsuranceClaim",
     "Business",
     "CausalEvent",
     "GoodType",
@@ -92,6 +97,11 @@ __all__ = [
     "repay_loan",
     "charge_account_fee",
     "balance_sheet",
+    "issue_policy",
+    "file_claim",
+    "approve_claim",
+    "settle_claim",
+    "insurer_exposure",
     "add_property",
     "buy_property",
     "collect_rent",

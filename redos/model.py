@@ -216,6 +216,37 @@ class BankLoan:
 
 
 @dataclass
+class InsurancePolicy:
+    """A premium-paid coverage obligation attached to a canonical risk holder."""
+
+    id: str
+    insurer_id: str
+    policyholder_id: str
+    line: str
+    region_id: str
+    premium: float
+    coverage_limit: float
+    deductible: float
+    issued_at: datetime
+    expires_at: datetime
+    status: str = "active"
+
+
+@dataclass
+class InsuranceClaim:
+    """A claim whose loss is anchored to an observed causal world event."""
+
+    id: str
+    policy_id: str
+    loss_event_id: str
+    loss_amount: float
+    indemnity: float
+    filed_at: datetime
+    status: str = "filed"
+    settled_at: datetime | None = None
+
+
+@dataclass
 class JobOpening:
     id: str
     employer_id: str
@@ -449,6 +480,8 @@ class World:
         self.properties: dict[str, Property] = {}
         self.bank_accounts: dict[str, BankAccount] = {}
         self.bank_loans: dict[str, BankLoan] = {}
+        self.insurance_policies: dict[str, InsurancePolicy] = {}
+        self.insurance_claims: dict[str, InsuranceClaim] = {}
         self.job_openings: dict[str, JobOpening] = {}
         self.contracts: dict[str, Contract] = {}
         self.markets: dict[str, Market] = {}
@@ -484,6 +517,8 @@ class World:
             Property: self.properties,
             BankAccount: self.bank_accounts,
             BankLoan: self.bank_loans,
+            InsurancePolicy: self.insurance_policies,
+            InsuranceClaim: self.insurance_claims,
             JobOpening: self.job_openings,
             Contract: self.contracts,
             Market: self.markets,
