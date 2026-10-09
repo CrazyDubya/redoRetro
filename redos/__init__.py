@@ -15,6 +15,7 @@ from .model import (
     World,
 )
 from .rules import Rule, RuleBook
+from .simulation import apply_transport_weather, effective_route_hours, set_route_condition
 from .transport import (
     add_asset,
     add_facility,
@@ -45,6 +46,9 @@ __all__ = [
     "World",
     "Rule",
     "RuleBook",
+    "apply_transport_weather",
+    "effective_route_hours",
+    "set_route_condition",
     "SliceState",
     "build_integrated_world",
     "run_autonomous_days",

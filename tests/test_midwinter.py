@@ -3,7 +3,7 @@ import unittest
 from redos.bootstrap import build_tiny_world
 from redos.enterprise import create_contract
 from redos.model import Place, Route, TransportAsset, TransportFacility
-from redos.simulation import effective_route_hours, route_path, set_route_condition, tick
+from redos.simulation import apply_transport_weather, effective_route_hours, route_path, set_route_condition, tick
 from redos.transport import add_asset, add_facility, advance_freight, dispatch_freight
 
 
@@ -79,6 +79,27 @@ class MidwinterTraversalTests(unittest.TestCase):
         advance_freight(world, 1)
         self.assertEqual(shipment.status, "delivered")
         self.assertEqual(contract.status, "settled")
+
+    def test_weather_event_records_wind_and_waterway_and_recovers(self) -> None:
+        world = build_tiny_world()
+        world.add(Place("island", "Island Landing"))
+        world.add(Route("water-run", "shop", "island", 1.0, 1, "water", terrain="water", allowed_modes=("vessel",)))
+        weather_id = apply_transport_weather(
+            world,
+            ("water-run",),
+            weather="harbor storm",
+            wind=0.8,
+            waterway="storm",
+        )
+        condition = world.route_conditions["water-run"]
+        self.assertFalse(condition.accessible)
+        self.assertEqual(condition.waterway, "storm")
+        self.assertEqual(condition.wind, 0.8)
+        changed = next(event for event in world.events if event.kind == "route_condition_changed")
+        self.assertIn(weather_id, changed.causes)
+        self.assertEqual(route_path(world, "shop", "island", mode="vessel"), [])
+        set_route_condition(world, "water-run", accessible=True, wind=0.0, waterway="calm")
+        self.assertEqual([route.id for route in route_path(world, "shop", "island", mode="vessel")], ["water-run"])
 
 
 if __name__ == "__main__":

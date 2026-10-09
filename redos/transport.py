@@ -458,11 +458,16 @@ def _advance_freight_step(world: World, hours: float) -> list[str]:
                         and event.at == world.now
                         for event in world.events
                     ):
+                        condition_causes = tuple(
+                            event.id
+                            for event in reversed(world.events)
+                            if event.kind == "route_condition_changed" and route.id in event.entities
+                        )[:1]
                         world.record(
                             "freight_delayed",
                             f"{shipment.id} delayed by route conditions",
                             entities=[shipment.id, asset.id, route.id],
-                            causes=tuple(world.contracts[shipment.contract_id].causal_event_ids[-1:]),
+                            causes=tuple(world.contracts[shipment.contract_id].causal_event_ids[-1:]) + condition_causes,
                             data={"hazard": world.route_conditions.get(route.id).hazard if route.id in world.route_conditions else None},
                         )
                     break
