@@ -393,6 +393,9 @@ class Shipment:
     pace: str = "steady"
     delay_remaining_hours: float = 0.0
     interruption_reason: str | None = None
+    carrier_plan: tuple[str, ...] = ()
+    relay_leg_counts: tuple[int, ...] = ()
+    carrier_plan_index: int = 0
 
 
 @dataclass
@@ -417,6 +420,7 @@ class TransportAsset:
     operating_cost_payee_id: str | None = None
     available: bool = True
     assigned_shipment_id: str | None = None
+    reserved_for_shipment_id: str | None = None
     assignment_kind: str | None = None
     cargo_clearance_pending: bool = False
     unavailable_reason: str | None = None
