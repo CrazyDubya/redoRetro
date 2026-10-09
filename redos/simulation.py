@@ -179,6 +179,46 @@ def walk(world: World, actor_id: str, destination_id: str):
 
 
 def _start_next_leg(world: World, actor: Actor, target_id: str) -> bool:
+    # Passenger services are ordinary route choices declared in world data.
+    # The actor first walks to the boarding place, then boards if the carrier
+    # is physically present and available; there is no teleporting fallback.
+    for service in world.runtime.get("passenger_services", ()):
+        if len(service) < 3 or service[2] != target_id or service[0] not in world.transport_assets:
+            continue
+        asset_id, boarding_place_id, _destination_id = service[:3]
+        if actor.location_id != boarding_place_id:
+            boarding_path = route_path(world, actor.location_id, boarding_place_id, mode="walk")
+            if not boarding_path:
+                continue
+            route = boarding_path[0]
+            movement = world.begin_movement(actor.id, route.id)
+            world.record(
+                "travel_started",
+                f"{actor.id} travelled toward passenger boarding at {boarding_place_id}",
+                actors=[actor.id],
+                entities=[route.id, boarding_place_id],
+                data={"travel_hours": movement.duration_hours, "distance": route.distance},
+            )
+            return True
+        from .transport import board_passenger
+
+        try:
+            board_passenger(world, actor.id, asset_id, target_id)
+            return True
+        except ValueError:
+            if not any(
+                event.kind == "passenger_service_unavailable"
+                and actor.id in event.actors
+                and event.at == world.now
+                for event in world.events
+            ):
+                world.record(
+                    "passenger_service_unavailable",
+                    f"{actor.id} could not board {asset_id}",
+                    actors=[actor.id],
+                    entities=[asset_id, target_id],
+                )
+            return False
     path = route_path(world, actor.location_id, target_id, mode="walk")
     if not path:
         return False
