@@ -790,7 +790,31 @@ def _begin_cargo_recovery(world: World, shipment: Shipment, asset: TransportAsse
     seller.  Recovery never uses ``transfer_goods`` merely because a holder's
     last waypoint happens to equal the seller's place.
     """
-    path = route_path(world, asset.location_id, seller_location_id, mode=asset.asset_type)
+    initial_elapsed = 0.0
+    if shipment.current_route_index < len(shipment.route_ids) and shipment.elapsed_hours > 1e-9:
+        current_route = world.routes[shipment.route_ids[shipment.current_route_index]]
+        forward_duration = effective_route_hours(world, current_route, mode=asset.asset_type)
+        reverse_candidates = [
+            route
+            for route in world.routes.values()
+            if route.origin_id == current_route.destination_id
+            and route.destination_id == current_route.origin_id
+            and route_is_accessible(world, route, mode=asset.asset_type)
+        ]
+        if not reverse_candidates:
+            asset.available = False
+            asset.unavailable_reason = "no physical reverse route for cargo recovery"
+            return False
+        reverse_route = min(
+            reverse_candidates,
+            key=lambda route: effective_route_hours(world, route, mode=asset.asset_type),
+        )
+        reverse_duration = effective_route_hours(world, reverse_route, mode=asset.asset_type)
+        initial_elapsed = reverse_duration * max(0.0, 1.0 - shipment.elapsed_hours / forward_duration)
+        onward = route_path(world, current_route.origin_id, seller_location_id, mode=asset.asset_type)
+        path = [reverse_route, *onward]
+    else:
+        path = route_path(world, asset.location_id, seller_location_id, mode=asset.asset_type)
     if not path:
         asset.available = False
         asset.unavailable_reason = "no physical cargo recovery route"
@@ -801,12 +825,12 @@ def _begin_cargo_recovery(world: World, shipment: Shipment, asset: TransportAsse
     asset.unavailable_reason = None
     asset.return_route_ids = tuple(route.id for route in path)
     asset.return_route_index = 0
-    asset.return_elapsed_hours = 0.0
+    asset.return_elapsed_hours = initial_elapsed
     world.record(
         "cargo_recovery_started",
         f"{shipment.id} cargo began physical recovery",
         entities=[shipment.id, asset.id, *asset.return_route_ids],
-        data={"destination": seller_location_id},
+        data={"destination": seller_location_id, "mid_route": initial_elapsed > 0},
     )
     return True
 
@@ -1210,9 +1234,8 @@ def resolve_failed_cargo(world: World, shipment_id: str) -> bool:
         raise ValueError("failed cargo is not present on carrier")
     if asset.assignment_kind == "cargo_recovery":
         return False
-    if shipment.current_route_index < len(shipment.route_ids) and shipment.elapsed_hours > 1e-9:
-        raise ValueError("carrier is mid-route; failed cargo cannot be recovered from its last waypoint")
-    if asset.location_id != seller.location_id:
+    mid_route = shipment.current_route_index < len(shipment.route_ids) and shipment.elapsed_hours > 1e-9
+    if asset.location_id != seller.location_id or mid_route:
         return _begin_cargo_recovery(world, shipment, asset, seller.location_id)
     world.transfer_goods(
         contract.good_type_id,

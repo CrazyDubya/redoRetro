@@ -16,6 +16,7 @@ from redos.transport import (
     add_service,
     advance_freight,
     dispatch_freight,
+    replenish_asset,
     resolve_failed_cargo,
 )
 
@@ -121,10 +122,13 @@ class CrossSystemCorrectnessTests(unittest.TestCase):
         world, seller, shipment = self._failed_freight_world(fuel=0.35)
         advance_freight(world, 5)
         self.assertEqual(shipment.status, "failed")
-        with self.assertRaises(ValueError):
-            resolve_failed_cargo(world, shipment.id)
+        self.assertTrue(resolve_failed_cargo(world, shipment.id))
         self.assertEqual(world.quantity_held(seller.id, "metals"), 0.0)
         self.assertEqual(world.quantity_held("recovery-cart", "metals"), 1.0)
+        replenish_asset(world, "recovery-cart", "fuel", 10.0)
+        advance_freight(world, 30)
+        self.assertEqual(world.quantity_held(seller.id, "metals"), 1.0)
+        self.assertEqual(world.quantity_held("recovery-cart", "metals"), 0.0)
 
     def test_ocean_booking_failure_is_an_explicit_failed_obligation(self):
         world = build_tiny_world(seed=206)
