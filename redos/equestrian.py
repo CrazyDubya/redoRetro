@@ -8,7 +8,7 @@ events remain shared with carts and vessels.
 
 from __future__ import annotations
 
-from .model import Movement, World
+from .model import HorseState, Movement, World
 from .transport import board_passenger, replenish_asset
 
 
@@ -69,14 +69,23 @@ def care_for_horse(
     before = horse.readiness
     horse.readiness = min(1.0, horse.readiness + amount)
     restored = horse.readiness - before
+    profile = world.horses.get(horse_id)
+    if action == "rest" and profile is not None:
+        profile.fatigue = max(0.0, profile.fatigue - amount)
+        profile.injury = max(0.0, profile.injury - amount * 0.25)
     world.record(
         "horse_groomed" if action == "groom" else "horse_rested",
         f"{horse_id} received {action}",
         entities=[horse_id],
-        data={"readiness_before": before, "readiness_after": horse.readiness, "restored": restored},
+        data={
+            "readiness_before": before,
+            "readiness_after": horse.readiness,
+            "restored": restored,
+            "fatigue": profile.fatigue if profile is not None else None,
+            "injury": profile.injury if profile is not None else None,
+        },
     )
     if restored > 0 and horse.condition > 0:
         horse.available = True
         horse.unavailable_reason = None
     return restored
-

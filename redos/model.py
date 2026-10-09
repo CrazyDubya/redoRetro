@@ -304,6 +304,26 @@ class TransportAsset:
 
 
 @dataclass
+class HorseState:
+    """Persistent racing and husbandry state attached to one horse asset."""
+
+    id: str
+    asset_id: str
+    age_years: int = 3
+    sex: str = "unknown"
+    speed: float = 0.5
+    stamina: float = 0.5
+    temperament: float = 0.5
+    fatigue: float = 0.0
+    injury: float = 0.0
+    training_points: float = 0.0
+    races: int = 0
+    wins: int = 0
+    earnings: float = 0.0
+    last_race_at: datetime | None = None
+
+
+@dataclass
 class TransportFacility:
     id: str
     place_id: str
@@ -380,6 +400,7 @@ class World:
         self.movements: dict[str, Movement] = {}
         self.shipments: dict[str, Shipment] = {}
         self.transport_assets: dict[str, TransportAsset] = {}
+        self.horses: dict[str, HorseState] = {}
         self.transport_facilities: dict[str, TransportFacility] = {}
         self.recipes: dict[str, list[Any]] = {}
         self.runtime: dict[str, Any] = {}
@@ -411,6 +432,7 @@ class World:
             Movement: self.movements,
             Shipment: self.shipments,
             TransportAsset: self.transport_assets,
+            HorseState: self.horses,
             TransportFacility: self.transport_facilities,
         }.get(type(entity))
         if collection is None:

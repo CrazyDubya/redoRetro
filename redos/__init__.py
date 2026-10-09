@@ -10,6 +10,7 @@ from .model import (
     Place,
     Route,
     RouteCondition,
+    HorseState,
     TransportAsset,
     TransportFacility,
     World,
@@ -18,6 +19,7 @@ from .rules import Rule, RuleBook
 from .simulation import apply_transport_weather, effective_route_hours, set_route_condition
 from .harbor import build_harbor_world, harbor_audit
 from .equestrian import care_for_horse, ride
+from .derby import add_horse, race_horses, train_horse
 from .transport import (
     add_asset,
     add_facility,
@@ -45,6 +47,7 @@ __all__ = [
     "Place",
     "Route",
     "RouteCondition",
+    "HorseState",
     "TransportAsset",
     "TransportFacility",
     "World",
@@ -57,6 +60,9 @@ __all__ = [
     "harbor_audit",
     "care_for_horse",
     "ride",
+    "add_horse",
+    "race_horses",
+    "train_horse",
     "SliceState",
     "build_integrated_world",
     "run_autonomous_days",
