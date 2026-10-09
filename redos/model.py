@@ -33,6 +33,24 @@ class Route:
     distance: float
     travel_days: int
     mode: str = "walk"
+    terrain: str = "road"
+    allowed_modes: tuple[str, ...] = ()
+
+
+@dataclass
+class RouteCondition:
+    """Current passage conditions for one route.
+
+    A multiplier above one represents slower passage (for example deep snow
+    or a headwind); an inaccessible route must be bypassed or wait for a
+    condition change.  The base Route remains the map, while this object is
+    the changing environmental state.
+    """
+
+    route_id: str
+    accessible: bool = True
+    travel_multiplier: float = 1.0
+    hazard: str | None = None
 
 
 @dataclass
@@ -325,6 +343,7 @@ class World:
         self.random = random.Random(seed)
         self.places: dict[str, Place] = {}
         self.routes: dict[str, Route] = {}
+        self.route_conditions: dict[str, RouteCondition] = {}
         self.goods: dict[str, GoodType] = {}
         self.lots: dict[str, InventoryLot] = {}
         self.households: dict[str, Household] = {}
@@ -355,6 +374,7 @@ class World:
         collection = {
             Place: self.places,
             Route: self.routes,
+            RouteCondition: self.route_conditions,
             GoodType: self.goods,
             InventoryLot: self.lots,
             Household: self.households,
@@ -595,12 +615,16 @@ class World:
         )
 
     def begin_movement(self, actor_id: str, route_id: str) -> Movement:
+        from .simulation import effective_route_hours, route_is_accessible
+
         actor = self.actors[actor_id]
         route = self.routes[route_id]
         if actor.traveling_to is not None:
             raise ValueError(f"{actor_id} is already moving")
         if actor.location_id != route.origin_id:
             raise ValueError(f"route {route_id} does not start at {actor.location_id}")
+        if not route_is_accessible(self, route, mode="walk"):
+            raise ValueError(f"route {route_id} is inaccessible for walk")
         origin = self.places[route.origin_id]
         actor.position = (origin.x, origin.y)
         self._event_number += 1
@@ -611,7 +635,7 @@ class World:
             origin_id=route.origin_id,
             destination_id=route.destination_id,
             elapsed_hours=0.0,
-            duration_hours=max(1.0, route.travel_days * 24.0),
+            duration_hours=effective_route_hours(self, route, mode="walk"),
         )
         self.movements[movement.id] = movement
         actor.traveling_to = route.destination_id
@@ -623,6 +647,22 @@ class World:
             raise ValueError("movement time cannot move backwards")
         arrived: list[str] = []
         for movement_id, movement in list(self.movements.items()):
+            condition = self.route_conditions.get(movement.route_id)
+            if condition is not None and not condition.accessible:
+                if not any(
+                    event.kind == "travel_delayed"
+                    and movement.id in event.entities
+                    and event.at == self.now
+                    for event in self.events
+                ):
+                    self.record(
+                        "travel_delayed",
+                        f"{movement.actor_id} delayed by route conditions",
+                        actors=[movement.actor_id],
+                        entities=[movement.id, movement.route_id],
+                        data={"hazard": condition.hazard},
+                    )
+                continue
             movement.elapsed_hours += hours
             movement.progress = min(1.0, movement.elapsed_hours / movement.duration_hours)
             actor = self.actors[movement.actor_id]

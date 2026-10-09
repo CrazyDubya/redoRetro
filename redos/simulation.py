@@ -8,10 +8,80 @@ from datetime import timedelta
 from typing import Iterable
 
 from .living import activity_for_hour
-from .model import Actor, AggregatePopulation, Route, World
+from .model import Actor, AggregatePopulation, Route, RouteCondition, World
 
 
-def route_path(world: World, origin_id: str, destination_id: str) -> list[Route]:
+TERRAIN_TRAVEL_MULTIPLIERS = {
+    "road": 1.0,
+    "plain": 1.0,
+    "rough": 1.5,
+    "mountain": 2.5,
+    "water": 1.0,
+}
+
+# Midwinter's useful distinction is that the movement method changes how
+# terrain is negotiated. These are small, inspectable factors, not a second
+# movement model.
+METHOD_TERRAIN_MULTIPLIERS = {
+    ("walk", "rough"): 1.2,
+    ("cart", "rough"): 1.4,
+    ("cart", "mountain"): 1.8,
+    ("vessel", "water"): 1.0,
+}
+
+
+def route_condition(world: World, route_id: str) -> RouteCondition:
+    return world.route_conditions.get(route_id, RouteCondition(route_id))
+
+
+def route_is_accessible(world: World, route: Route, *, mode: str | None = None) -> bool:
+    condition = route_condition(world, route.id)
+    if not condition.accessible:
+        return False
+    return not (mode is not None and route.allowed_modes and mode not in route.allowed_modes)
+
+
+def effective_route_hours(world: World, route: Route, *, mode: str | None = None) -> float:
+    """Return passage time after terrain and current conditions are applied."""
+    effective_mode = mode or route.mode
+    if not route_is_accessible(world, route, mode=effective_mode):
+        raise ValueError(f"route {route.id} is inaccessible for {effective_mode}")
+    condition = route_condition(world, route.id)
+    terrain_multiplier = TERRAIN_TRAVEL_MULTIPLIERS.get(route.terrain, 1.0)
+    method_multiplier = METHOD_TERRAIN_MULTIPLIERS.get((effective_mode, route.terrain), 1.0)
+    return max(1.0, route.travel_days * 24.0 * terrain_multiplier * method_multiplier * condition.travel_multiplier)
+
+
+def set_route_condition(
+    world: World,
+    route_id: str,
+    *,
+    accessible: bool = True,
+    travel_multiplier: float = 1.0,
+    hazard: str | None = None,
+    causes: tuple[str, ...] = (),
+) -> RouteCondition:
+    if route_id not in world.routes:
+        raise KeyError(route_id)
+    if travel_multiplier <= 0:
+        raise ValueError("route travel multiplier must be positive")
+    condition = RouteCondition(route_id, accessible, travel_multiplier, hazard)
+    world.route_conditions[route_id] = condition
+    world.record(
+        "route_condition_changed",
+        f"route {route_id} conditions changed",
+        entities=[route_id],
+        causes=causes,
+        data={
+            "accessible": accessible,
+            "travel_multiplier": travel_multiplier,
+            "hazard": hazard,
+        },
+    )
+    return condition
+
+
+def route_path(world: World, origin_id: str, destination_id: str, *, mode: str | None = None) -> list[Route]:
     if origin_id == destination_id:
         return []
     queue: deque[tuple[str, list[Route]]] = deque([(origin_id, [])])
@@ -19,7 +89,7 @@ def route_path(world: World, origin_id: str, destination_id: str) -> list[Route]
     while queue:
         place_id, path = queue.popleft()
         for route in world.routes.values():
-            if route.origin_id != place_id or route.destination_id in visited:
+            if route.origin_id != place_id or route.destination_id in visited or not route_is_accessible(world, route, mode=mode):
                 continue
             next_path = [*path, route]
             if route.destination_id == destination_id:
@@ -32,7 +102,7 @@ def route_path(world: World, origin_id: str, destination_id: str) -> list[Route]
 def walk(world: World, actor_id: str, destination_id: str):
     """Start embodied movement for either a player or an autonomous actor."""
     actor = world.actors[actor_id]
-    path = route_path(world, actor.location_id, destination_id)
+    path = route_path(world, actor.location_id, destination_id, mode="walk")
     if not path:
         raise ValueError(f"no walkable path from {actor.location_id} to {destination_id}")
     actor.journey_destination_id = destination_id
@@ -48,7 +118,7 @@ def walk(world: World, actor_id: str, destination_id: str):
 
 
 def _start_next_leg(world: World, actor: Actor, target_id: str) -> bool:
-    path = route_path(world, actor.location_id, target_id)
+    path = route_path(world, actor.location_id, target_id, mode="walk")
     if not path:
         return False
     route = path[0]
