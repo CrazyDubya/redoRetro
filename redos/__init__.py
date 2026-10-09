@@ -26,6 +26,7 @@ from .model import (
 )
 from .rules import Rule, RuleBook
 from .market import accept_market_delivery
+from .merchant import MerchantRouteLeg, evaluate_merchant_route
 from .simulation import apply_transport_weather, best_route, effective_route_hours, set_route_condition
 from .harbor import build_harbor_world, harbor_audit
 from .equestrian import care_for_horse, ride
@@ -96,6 +97,8 @@ __all__ = [
     "effective_route_hours",
     "best_route",
     "accept_market_delivery",
+    "MerchantRouteLeg",
+    "evaluate_merchant_route",
     "set_route_condition",
     "build_harbor_world",
     "harbor_audit",
