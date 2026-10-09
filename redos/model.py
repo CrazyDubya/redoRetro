@@ -430,6 +430,8 @@ class TransportAsset:
     return_route_ids: tuple[str, ...] = ()
     return_route_index: int = 0
     return_elapsed_hours: float = 0.0
+    crew_ids: tuple[str, ...] = ()
+    minimum_crew: int = 0
 
 
 @dataclass

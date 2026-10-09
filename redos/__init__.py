@@ -47,6 +47,7 @@ from .realestate import add_property, buy_property, collect_rent, lease_property
 from .derby import add_horse, race_horses, train_horse
 from .transport import (
     add_asset,
+    assign_crew,
     add_facility,
     add_service,
     advance_services,
@@ -134,6 +135,7 @@ __all__ = [
     "build_integrated_world",
     "run_autonomous_days",
     "add_asset",
+    "assign_crew",
     "add_facility",
     "add_service",
     "advance_services",

@@ -26,10 +26,35 @@ def add_asset(world: World, asset: TransportAsset) -> TransportAsset:
         raise ValueError("transport condition must be between zero and one")
     if not 0 <= asset.readiness <= 1:
         raise ValueError("transport readiness must be between zero and one")
+    if asset.minimum_crew < 0:
+        raise ValueError("transport minimum crew cannot be negative")
+    if len(set(asset.crew_ids)) != len(asset.crew_ids):
+        raise ValueError("transport crew cannot contain duplicates")
+    if any(crew_id not in world.actors for crew_id in asset.crew_ids):
+        raise KeyError("transport crew member is not an actor")
     for supply, quantity in asset.supplies.items():
         if quantity < 0 or quantity > asset.supply_capacity.get(supply, quantity) + 1e-9:
             raise ValueError(f"invalid starting supply for {supply}")
     world.add(asset)
+    return asset
+
+
+def assign_crew(world: World, asset_id: str, crew_ids: tuple[str, ...]) -> TransportAsset:
+    """Assign existing people to a vessel or cart without creating workers."""
+    asset = world.transport_assets[asset_id]
+    if asset.assigned_shipment_id is not None:
+        raise ValueError("cannot change crew while the asset is assigned")
+    if len(set(crew_ids)) != len(crew_ids):
+        raise ValueError("transport crew cannot contain duplicates")
+    if len(crew_ids) < asset.minimum_crew:
+        raise ValueError(f"asset {asset_id} requires at least {asset.minimum_crew} crew")
+    for crew_id in crew_ids:
+        if crew_id not in world.actors:
+            raise KeyError(crew_id)
+        if any(crew_id in other.crew_ids for other in world.transport_assets.values() if other.id != asset_id):
+            raise ValueError(f"actor {crew_id} is already assigned to another asset")
+    asset.crew_ids = tuple(crew_ids)
+    world.record("asset_crew_assigned", f"{asset.id} received its crew", actors=crew_ids, entities=[asset.id])
     return asset
 
 
@@ -264,6 +289,8 @@ def assign_asset(world: World, asset_id: str, assignment_id: str, *, kind: str) 
         raise ValueError(f"carrier {asset_id} still holds unresolved cargo")
     if asset.condition <= 0 or asset.readiness <= 0:
         raise ValueError(f"carrier {asset_id} is not operational")
+    if len(asset.crew_ids) < asset.minimum_crew:
+        raise ValueError(f"carrier {asset_id} lacks its required crew")
     horse = world.horses.get(asset.id)
     if asset.asset_type == "horse" and horse is not None and horse.injury > 0:
         raise ValueError(f"horse {asset_id} is injured")
