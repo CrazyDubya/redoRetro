@@ -54,6 +54,11 @@ class RouteCondition:
     wind: float = 0.0
     waterway: str = "calm"
 
+    @property
+    def id(self) -> str:
+        """Expose the canonical route key used by World.add()."""
+        return self.route_id
+
 
 @dataclass
 class GoodType:
@@ -274,6 +279,7 @@ class TransportAsset:
     location_id: str
     owner_id: str
     capacity: float
+    home_location_id: str | None = None
     operator_id: str | None = None
     condition: float = 1.0
     readiness: float = 1.0
@@ -288,9 +294,13 @@ class TransportAsset:
     available: bool = True
     assigned_shipment_id: str | None = None
     assignment_kind: str | None = None
+    cargo_clearance_pending: bool = False
     unavailable_reason: str | None = None
     accrued_operating_cost: float = 0.0
     operating_cost_due: float = 0.0
+    return_route_ids: tuple[str, ...] = ()
+    return_route_index: int = 0
+    return_elapsed_hours: float = 0.0
 
 
 @dataclass
@@ -302,6 +312,9 @@ class TransportFacility:
     queue: list[str] = field(default_factory=list)
     arrival_queue: list[str] = field(default_factory=list)
     active_shipments: list[str] = field(default_factory=list)
+    handling_hours: float = 0.0
+    completed_operations: int = 0
+    peak_queue_length: int = 0
 
 
 @dataclass
@@ -402,7 +415,8 @@ class World:
         }.get(type(entity))
         if collection is None:
             raise TypeError(f"unsupported world entity: {type(entity)!r}")
-        collection[entity.id] = entity
+        key = entity.route_id if isinstance(entity, RouteCondition) else entity.id
+        collection[key] = entity
         if isinstance(entity, Household):
             for actor_id in entity.members:
                 if actor_id in self.actors:
@@ -674,6 +688,7 @@ class World:
                         entities=[movement.id, *( [movement.transport_asset_id] if movement.transport_asset_id else [])],
                     )
                 continue
+            route = self.routes[movement.route_id]
             condition = self.route_conditions.get(movement.route_id)
             if condition is not None and not condition.accessible:
                 condition_event_id = next(
@@ -700,7 +715,94 @@ class World:
                     movement.blocked_route_condition_id = condition_event_id
                 continue
             movement.blocked_route_condition_id = None
-            movement.elapsed_hours += hours
+            from .simulation import effective_route_hours
+
+            try:
+                # Conditions may change while a person or passenger is in
+                # motion.  Recompute the remaining duration before consuming
+                # time so a shortened route cannot produce negative progress.
+                movement.duration_hours = effective_route_hours(
+                    self,
+                    route,
+                    mode=movement.movement_mode,
+                )
+            except ValueError:
+                continue
+            available = max(0.0, movement.duration_hours - movement.elapsed_hours)
+            step = min(hours, available)
+            if transport_asset is not None and step > 1e-9:
+                from .transport import consume_asset_supply
+
+                causes = tuple(
+                    event.id
+                    for event in reversed(self.events)
+                    if event.kind == "route_condition_changed" and movement.route_id in event.entities
+                )[:1]
+                requirements = []
+                if transport_asset.fuel_capacity > 0:
+                    requirements.append(("fuel", transport_asset.fuel_burn_per_hour * step))
+                requirements.extend(
+                    (supply, burn_rate * step)
+                    for supply, burn_rate in transport_asset.supply_burn_per_hour.items()
+                )
+                for supply, required in requirements:
+                    available_supply = (
+                        transport_asset.fuel
+                        if supply == "fuel"
+                        else transport_asset.supplies.get(supply, 0.0)
+                    )
+                    if available_supply + 1e-9 < required:
+                        consume_asset_supply(
+                            self,
+                            transport_asset.id,
+                            supply,
+                            required,
+                            causes=causes,
+                        )
+                        self.record(
+                            "passenger_delayed",
+                            f"{movement.actor_id} delayed because {transport_asset.id} lacks {supply}",
+                            actors=[movement.actor_id],
+                            entities=[movement.id, transport_asset.id],
+                        )
+                        break
+                else:
+                    for supply, required in requirements:
+                        consume_asset_supply(
+                            self,
+                            transport_asset.id,
+                            supply,
+                            required,
+                            causes=causes,
+                        )
+                    movement.elapsed_hours += step
+                    if transport_asset.operating_cost_per_hour > 0:
+                        cost = transport_asset.operating_cost_per_hour * step
+                        transport_asset.accrued_operating_cost += cost
+                        transport_asset.operating_cost_due += cost
+                        self.record(
+                            "transport_cost_accrued",
+                            f"{transport_asset.id} accrued passenger operating cost",
+                            actors=[transport_asset.owner_id],
+                            entities=[transport_asset.id, movement.id],
+                            data={"amount": cost, "outstanding": transport_asset.operating_cost_due},
+                        )
+                        if transport_asset.operating_cost_payee_id is not None:
+                            try:
+                                self.pay(
+                                    transport_asset.owner_id,
+                                    transport_asset.operating_cost_payee_id,
+                                    transport_asset.operating_cost_due,
+                                    reason=f"{transport_asset.id} passenger operating cost",
+                                )
+                                transport_asset.operating_cost_due = 0.0
+                            except (KeyError, ValueError):
+                                pass
+                        transport_asset.accrued_operating_cost = 0.0
+                if transport_asset.unavailable_reason is not None:
+                    continue
+            else:
+                movement.elapsed_hours += step
             movement.progress = min(1.0, movement.elapsed_hours / movement.duration_hours)
             actor = self.actors[movement.actor_id]
             origin = self.places[movement.origin_id]

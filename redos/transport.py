@@ -93,6 +93,8 @@ def assign_asset(world: World, asset_id: str, assignment_id: str, *, kind: str) 
     asset = world.transport_assets[asset_id]
     if not asset.available or asset.assigned_shipment_id is not None:
         raise ValueError(f"carrier {asset_id} is unavailable")
+    if asset.cargo_clearance_pending or _asset_load(world, asset.id) > 1e-9:
+        raise ValueError(f"carrier {asset_id} still holds unresolved cargo")
     if asset.condition <= 0 or asset.readiness <= 0:
         raise ValueError(f"carrier {asset_id} is not operational")
     asset.assigned_shipment_id = assignment_id
@@ -103,12 +105,26 @@ def assign_asset(world: World, asset_id: str, assignment_id: str, *, kind: str) 
     return asset
 
 
-def release_asset(world: World, asset_id: str, *, available: bool = True, reason: str | None = None) -> TransportAsset:
+def release_asset(
+    world: World,
+    asset_id: str,
+    *,
+    available: bool = True,
+    reason: str | None = None,
+    start_reposition: bool = True,
+) -> TransportAsset:
     asset = world.transport_assets[asset_id]
+    previous_kind = asset.assignment_kind
     asset.assigned_shipment_id = None
     asset.assignment_kind = None
+    asset.cargo_clearance_pending = _asset_load(world, asset.id) > 1e-9
     asset.available = available and asset.condition > 0 and asset.readiness > 0
     asset.unavailable_reason = None if asset.available else reason
+    # Cargo custody is deliberately separate from mechanical readiness.  A
+    # carrier may be refuelled while still blocked from a new assignment until
+    # its failed cargo is physically recovered.
+    if previous_kind == "freight" and start_reposition and asset.available and not asset.cargo_clearance_pending:
+        _begin_reposition(world, asset)
     return asset
 
 
@@ -189,11 +205,17 @@ def dispatch_freight(
     if pace not in PACE_MULTIPLIERS:
         raise ValueError(f"unknown freight pace {pace!r}")
     contract = world.contracts[contract_id]
+    if contract.shipment_id is not None or contract.status not in {"open", "allocated"}:
+        raise ValueError(f"contract {contract_id} is already dispatched or not dispatchable")
     asset = world.transport_assets[carrier_id]
     origin = world.transport_facilities[origin_facility_id]
     destination = world.transport_facilities[destination_facility_id]
     if not asset.available or asset.assigned_shipment_id is not None:
         raise ValueError(f"carrier {carrier_id} is unavailable")
+    if asset.cargo_clearance_pending or _asset_load(world, asset.id) > 1e-9:
+        raise ValueError(f"carrier {carrier_id} still holds unresolved cargo")
+    if asset.condition <= 0 or asset.readiness <= 0:
+        raise ValueError(f"carrier {carrier_id} is not operational")
     if asset.location_id != origin.place_id or origin.place_id != contract.origin_id:
         raise ValueError("carrier and origin facility are not at the contract origin")
     if destination.place_id != contract.destination_id:
@@ -343,6 +365,7 @@ def _begin_unloading(world: World, shipment: Shipment) -> bool:
     if len(facility.active_shipments) >= facility.handling_capacity:
         if shipment.id not in facility.arrival_queue:
             facility.arrival_queue.append(shipment.id)
+            facility.peak_queue_length = max(facility.peak_queue_length, len(facility.arrival_queue))
         shipment.status = "arrived_queue"
         return False
     facility.active_shipments.append(shipment.id)
@@ -368,13 +391,105 @@ def _admit_loads(world: World) -> None:
     """Start only the work that was admitted at the beginning of this step."""
     for facility in world.transport_facilities.values():
         while facility.queue and len(facility.active_shipments) < facility.handling_capacity:
+            facility.peak_queue_length = max(facility.peak_queue_length, len(facility.queue))
             shipment_id = facility.queue.pop(0)
             shipment = world.shipments[shipment_id]
             if shipment.status != "queued":
                 continue
             facility.active_shipments.append(shipment.id)
             shipment.status = "loading"
+            facility.peak_queue_length = max(facility.peak_queue_length, len(facility.queue))
             world.record("loading_started", f"{shipment.id} began loading at {facility.id}", entities=[shipment.id, facility.id])
+
+
+def _begin_reposition(world: World, asset: TransportAsset) -> None:
+    """Start an empty physical return to an asset's declared home."""
+    if asset.home_location_id is None or asset.location_id == asset.home_location_id:
+        return
+    path = route_path(world, asset.location_id, asset.home_location_id, mode=asset.asset_type)
+    if not path:
+        asset.available = False
+        asset.unavailable_reason = "no physical return route"
+        return
+    world._event_number += 1
+    assignment_id = f"reposition-{world._event_number}"
+    asset.assigned_shipment_id = assignment_id
+    asset.assignment_kind = "reposition"
+    asset.available = False
+    asset.unavailable_reason = None
+    asset.return_route_ids = tuple(route.id for route in path)
+    asset.return_route_index = 0
+    asset.return_elapsed_hours = 0.0
+    world.record(
+        "asset_reposition_started",
+        f"{asset.id} began empty return to {asset.home_location_id}",
+        entities=[asset.id, *asset.return_route_ids],
+        data={"destination": asset.home_location_id},
+    )
+
+
+def _advance_asset_reposition(world: World, asset: TransportAsset, hours: float) -> None:
+    remaining = hours
+    while remaining > 1e-9 and asset.assignment_kind == "reposition":
+        if asset.return_route_index >= len(asset.return_route_ids):
+            asset.location_id = asset.home_location_id or asset.location_id
+            asset.return_route_ids = ()
+            asset.return_route_index = 0
+            asset.return_elapsed_hours = 0.0
+            release_asset(world, asset.id, start_reposition=False)
+            world.record("asset_reposition_arrived", f"{asset.id} returned to home", entities=[asset.id, asset.location_id])
+            return
+        route = world.routes[asset.return_route_ids[asset.return_route_index]]
+        if not route_is_accessible(world, route, mode=asset.asset_type):
+            asset.unavailable_reason = "return route blocked"
+            world.record("asset_reposition_delayed", f"{asset.id} waiting on return route", entities=[asset.id, route.id])
+            return
+        duration = effective_route_hours(world, route, mode=asset.asset_type)
+        available = max(0.0, duration - asset.return_elapsed_hours)
+        if available <= 1e-9:
+            asset.return_route_index += 1
+            asset.return_elapsed_hours = 0.0
+            asset.location_id = route.destination_id
+            continue
+        step = min(remaining, available)
+        if asset.fuel_capacity > 0 and not consume_asset_supply(world, asset.id, "fuel", asset.fuel_burn_per_hour * step):
+            asset.unavailable_reason = "fuel exhausted during return"
+            return
+        for supply, burn_rate in asset.supply_burn_per_hour.items():
+            if not consume_asset_supply(world, asset.id, supply, burn_rate * step):
+                asset.unavailable_reason = f"{supply} exhausted during return"
+                return
+        asset.accrued_operating_cost += asset.operating_cost_per_hour * step
+        asset.operating_cost_due += asset.operating_cost_per_hour * step
+        if asset.operating_cost_per_hour > 0:
+            cost = asset.operating_cost_per_hour * step
+            cost_event = world.record(
+                "transport_cost_accrued",
+                f"{asset.id} accrued repositioning cost",
+                actors=[asset.owner_id],
+                entities=[asset.id, route.id],
+                data={"amount": cost, "outstanding": asset.operating_cost_due},
+            )
+            if asset.operating_cost_payee_id is not None:
+                try:
+                    world.pay(
+                        asset.owner_id,
+                        asset.operating_cost_payee_id,
+                        asset.operating_cost_due,
+                        causes=[cost_event.id],
+                        reason=f"{asset.id} repositioning cost",
+                    )
+                    asset.operating_cost_due = 0.0
+                except (KeyError, ValueError):
+                    pass
+            asset.accrued_operating_cost = 0.0
+        asset.return_elapsed_hours += step
+        remaining -= step
+        if asset.return_elapsed_hours + 1e-9 >= duration:
+            asset.location_id = route.destination_id
+            asset.return_route_index += 1
+            asset.return_elapsed_hours = 0.0
+            world.record("asset_reposition_leg_arrived", f"{asset.id} reached {route.destination_id}", entities=[asset.id, route.id])
 
 
 def _settle_arrival(world: World, shipment: Shipment) -> None:
@@ -412,11 +527,12 @@ def _settle_arrival(world: World, shipment: Shipment) -> None:
             causes=contract.causal_event_ids[-1:],
             reason=f"{contract.id} freight settlement",
         )
+        delivery_holder = buyer.location_id if buyer.kind in {"market", "shop"} else buyer.id
         world.transfer_goods(
             contract.good_type_id,
             contract.quantity,
             from_holder=asset.id,
-            to_holder=buyer.id,
+            to_holder=delivery_holder,
             to_owner=buyer.id,
             causes=contract.causal_event_ids[-1:],
             reason=f"{contract.id} goods unloaded at destination",
@@ -452,6 +568,9 @@ def _settle_arrival(world: World, shipment: Shipment) -> None:
 
 def _advance_freight_step(world: World, hours: float) -> list[str]:
     """Advance one shared handling/movement interval without changing time."""
+    for asset in list(world.transport_assets.values()):
+        if asset.assignment_kind == "reposition":
+            _advance_asset_reposition(world, asset, hours)
     _admit_arrivals(world)
     _admit_loads(world)
     settled: list[str] = []
@@ -460,6 +579,7 @@ def _advance_freight_step(world: World, hours: float) -> list[str]:
             continue
         asset = world.transport_assets[shipment.carrier_id]
         origin = world.transport_facilities[shipment.origin_facility_id or ""]
+        destination = world.transport_facilities[shipment.destination_facility_id or ""]
         remaining = float(hours)
         if shipment.delay_remaining_hours > 0:
             step = min(remaining, shipment.delay_remaining_hours)
@@ -470,6 +590,7 @@ def _advance_freight_step(world: World, hours: float) -> list[str]:
         if shipment.status == "loading":
             step = min(remaining, shipment.loading_remaining_hours)
             shipment.loading_remaining_hours -= step
+            origin.handling_hours += step
             remaining -= step
             if shipment.loading_remaining_hours > 1e-9:
                 continue
@@ -484,6 +605,7 @@ def _advance_freight_step(world: World, hours: float) -> list[str]:
                 reason=f"{contract.id} cargo loaded onto {asset.id}",
             )
             shipment.cargo_lot_ids = [lot.id for lot in loaded]
+            origin.completed_operations += 1
             shipment.status = "in_transit"
             contract.status = "in_transit"
             _remove_active(origin, shipment.id)
@@ -522,7 +644,20 @@ def _advance_freight_step(world: World, hours: float) -> list[str]:
                 if shipment.interruption_reason and shipment.interruption_reason.startswith("route:"):
                     shipment.interruption_reason = None
                 duration = effective_route_hours(world, route, mode=asset.asset_type) * PACE_MULTIPLIERS[shipment.pace]
-                available = duration - shipment.elapsed_hours
+                available = max(0.0, duration - shipment.elapsed_hours)
+                if available <= 1e-9:
+                    if shipment.elapsed_hours > duration + 1e-9:
+                        world.record(
+                            "freight_progress_normalized",
+                            f"{shipment.id} completed a shortened route leg",
+                            entities=[shipment.id, asset.id, route.id],
+                            data={"previous_elapsed": shipment.elapsed_hours, "new_duration": duration},
+                        )
+                    shipment.current_route_index += 1
+                    shipment.elapsed_hours = 0.0
+                    asset.location_id = route.destination_id
+                    world.record("freight_arrived_leg", f"{shipment.id} reached {route.destination_id}", entities=[shipment.id, asset.id, route.id])
+                    continue
                 step = min(remaining, available)
                 if asset.fuel_capacity > 0 and not consume_asset_supply(
                     world,
@@ -559,6 +694,7 @@ def _advance_freight_step(world: World, hours: float) -> list[str]:
             step = min(remaining, shipment.unloading_remaining_hours)
             shipment.unloading_remaining_hours -= step
             if shipment.unloading_remaining_hours <= 1e-9:
+                destination.completed_operations += 1
                 _settle_arrival(world, shipment)
                 if shipment.status == "delivered":
                     settled.append(shipment.contract_id)
@@ -586,6 +722,34 @@ def _advance_freight_step(world: World, hours: float) -> list[str]:
             asset.accrued_operating_cost = 0.0
     _admit_arrivals(world)
     return settled
+
+
+def resolve_failed_cargo(world: World, shipment_id: str) -> bool:
+    """Recover failed cargo only when the carrier is physically at the seller."""
+    shipment = world.shipments[shipment_id]
+    if shipment.status != "failed" or shipment.carrier_id is None:
+        raise ValueError("only failed carrier shipments can be recovered")
+    contract = world.contracts[shipment.contract_id]
+    asset = world.transport_assets[shipment.carrier_id]
+    seller = world.businesses[contract.seller_id]
+    if asset.location_id != seller.location_id:
+        raise ValueError("carrier must be physically co-located with seller")
+    quantity = world.quantity_held(asset.id, contract.good_type_id)
+    if quantity + 1e-9 < contract.quantity:
+        raise ValueError("failed cargo is not present on carrier")
+    world.transfer_goods(
+        contract.good_type_id,
+        contract.quantity,
+        from_holder=asset.id,
+        to_holder=seller.id,
+        to_owner=seller.id,
+        causes=contract.causal_event_ids[-1:],
+        reason=f"{contract.id} failed cargo recovered",
+    )
+    asset.cargo_clearance_pending = _asset_load(world, asset.id) > 1e-9
+    release_asset(world, asset.id)
+    world.record("failed_cargo_recovered", f"{contract.id} cargo recovered by seller", entities=[contract.id, shipment.id, asset.id])
+    return True
 
 
 def advance_freight(world: World, hours: float = 1.0) -> list[str]:

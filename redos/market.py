@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import copy
 from typing import Iterable
 
 from .model import Actor, GoodType, Market, Place, Route, World
@@ -138,33 +139,67 @@ def refresh_market(world: World, market_id: str, *, days: int = 1) -> None:
         not market.production_source or not market.production_account_id
     ):
         raise ValueError(f"{market.id} has unexplained production")
-    for good_id in market.balances:
-        production = market.production_rates.get(good_id, 0.0) * days if market.production_source else 0.0
-        demand = market.demand_rates.get(good_id, 0.0) * days
-        market.balances[good_id] = world.quantity_held(market.place_id, good_id)
-        market.demand_backlog[good_id] = max(0.0, market.demand_backlog.get(good_id, 0.0) + demand - production)
-        market.price_history.setdefault(good_id, []).append(_market_price(world, market, good_id))
-    market.last_updated_day += days
-    # New production is physical canonical inventory, not an abstract market
-    # number.  Demand consumes that stock only when a transaction occurs.
-    for good_id, rate in market.production_rates.items():
-        if rate > 0:
-            quantity = rate * days
-            production_event = world.record(
-                "aggregate_production",
-                f"{market.id} received {quantity} {good_id} from {market.production_source}",
-                entities=[market.id, good_id],
-                data={"quantity": quantity, "source": market.production_source, "account": market.production_account_id},
-            )
-            world.create_lot(
-                good_id,
-                quantity,
-                holder_id=market.place_id,
-                owner_id=market.place_id,
-                provenance=(production_event.id, f"source:{market.production_account_id}"),
-            )
+    # Stage the whole transition and restore every touched canonical object if
+    # a later validation or physical inventory operation fails.  Market
+    # refresh must not leave a partially advanced economic clock behind.
+    market_state = {
+        id: (
+            copy.deepcopy(other.balances),
+            copy.deepcopy(other.demand_backlog),
+            copy.deepcopy(other.price_history),
+            other.last_updated_day,
+        )
+        for id, other in world.markets.items()
+    }
+    lots_state = copy.deepcopy(world.lots)
+    lot_original_state = copy.deepcopy(world._lot_original_quantity)
+    lot_creation_state = copy.deepcopy(world._lot_counts_as_creation)
+    lot_number = world._lot_number
+    event_number = world._event_number
+    events = list(world.events)
+    try:
+        for good_id in market.balances:
+            production = market.production_rates.get(good_id, 0.0) * days if market.production_source else 0.0
+            demand = market.demand_rates.get(good_id, 0.0) * days
             market.balances[good_id] = world.quantity_held(market.place_id, good_id)
-    world.record("market_refresh", f"{market.id} refreshed for {days} day(s)", entities=[market_id])
+            market.demand_backlog[good_id] = max(0.0, market.demand_backlog.get(good_id, 0.0) + demand - production)
+            market.price_history.setdefault(good_id, []).append(_market_price(world, market, good_id))
+        market.last_updated_day += days
+        # New production is physical canonical inventory, not an abstract
+        # market number. Demand consumes that stock only when a transaction
+        # occurs.
+        for good_id, rate in market.production_rates.items():
+            if rate > 0:
+                quantity = rate * days
+                production_event = world.record(
+                    "aggregate_production",
+                    f"{market.id} received {quantity} {good_id} from {market.production_source}",
+                    entities=[market.id, good_id],
+                    data={"quantity": quantity, "source": market.production_source, "account": market.production_account_id},
+                )
+                world.create_lot(
+                    good_id,
+                    quantity,
+                    holder_id=market.place_id,
+                    owner_id=market.place_id,
+                    provenance=(production_event.id, f"source:{market.production_account_id}"),
+                )
+                market.balances[good_id] = world.quantity_held(market.place_id, good_id)
+        world.record("market_refresh", f"{market.id} refreshed for {days} day(s)", entities=[market_id])
+    except Exception:
+        for id, (balances, demand_backlog, price_history, last_updated_day) in market_state.items():
+            other = world.markets[id]
+            other.balances = balances
+            other.demand_backlog = demand_backlog
+            other.price_history = price_history
+            other.last_updated_day = last_updated_day
+        world.lots = lots_state
+        world._lot_original_quantity = lot_original_state
+        world._lot_counts_as_creation = lot_creation_state
+        world._lot_number = lot_number
+        world._event_number = event_number
+        world.events[:] = events
+        raise
 
 
 def _money_object(world: World, holder_id: str) -> Actor | object:

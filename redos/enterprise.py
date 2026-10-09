@@ -105,6 +105,8 @@ def allocate_contract(world: World, contract_id: str) -> Contract:
 
 def dispatch_contract(world: World, contract_id: str) -> Contract:
     contract = world.contracts[contract_id]
+    if contract.shipment_id is not None or contract.status not in {"open", "allocated"}:
+        raise ValueError(f"contract {contract_id} is already dispatched or not dispatchable")
     if contract.status == "open":
         allocate_contract(world, contract_id)
     if contract.status != "allocated":
@@ -146,7 +148,10 @@ def advance_shipments(world: World, hours: float = 1.0) -> list[str]:
     # cannot be advanced once by the legacy holder-on-shipment engine and once
     # by the carrier engine.
     delivered: list[str] = []
-    if any(shipment.carrier_id is not None and shipment.status not in {"delivered", "failed"} for shipment in world.shipments.values()):
+    if (
+        any(shipment.carrier_id is not None and shipment.status not in {"delivered", "failed"} for shipment in world.shipments.values())
+        or any(asset.assignment_kind == "reposition" for asset in world.transport_assets.values())
+    ):
         from .transport import advance_freight
 
         delivered.extend(advance_freight(world, hours))
@@ -235,14 +240,22 @@ def advance_shipments(world: World, hours: float = 1.0) -> list[str]:
                 shipment.status = "lost"
                 world.record("cargo_lost", f"{contract.id} cargo could not return to seller", actors=[seller.id], entities=[contract.id, shipment.id], causes=[failed.id])
             continue
+        if buyer.cash + 1e-9 < total:
+            raise ValueError(f"{buyer.id} cannot pay {total}")
+        if world.quantity_held(shipment.id, contract.good_type_id) + 1e-9 < contract.quantity:
+            raise ValueError(f"{shipment.id} does not hold the contracted cargo")
+        payment = world.pay(buyer.id, seller.id, total, causes=contract.causal_event_ids[-1:], reason=f"{contract.id} settlement")
         delivery_holder = buyer.location_id if buyer.kind in {"market", "shop"} else buyer.id
-        world.transfer_goods(contract.good_type_id, contract.quantity, from_holder=shipment.id, to_holder=delivery_holder, to_owner=buyer.id, reason=f"{contract.id} goods delivered")
+        try:
+            world.transfer_goods(contract.good_type_id, contract.quantity, from_holder=shipment.id, to_holder=delivery_holder, to_owner=buyer.id, causes=[payment.id], reason=f"{contract.id} goods delivered")
+        except (KeyError, ValueError):
+            world.pay(seller.id, buyer.id, total, reason=f"reverse failed {contract.id} settlement")
+            raise
         shipment.status = "delivered"
         contract.status = "delivered"
         contract.delivered_at = world.now
-        delivered_event = world.record("contract_delivered", f"{contract.id} delivered physical goods", actors=[buyer.id, seller.id], entities=[contract.id, shipment.id], causes=contract.causal_event_ids[-1:])
+        delivered_event = world.record("contract_delivered", f"{contract.id} delivered physical goods", actors=[buyer.id, seller.id], entities=[contract.id, shipment.id], causes=[payment.id])
         contract.causal_event_ids.append(delivered_event.id)
-        payment = world.pay(buyer.id, seller.id, total, causes=[delivered_event.id], reason=f"{contract.id} settlement")
         contract.status = "settled"
         settled = world.record("contract_settled", f"{contract.id} settled", actors=[seller.id, buyer.id], entities=[contract.id], causes=[payment.id])
         contract.causal_event_ids.append(settled.id)
