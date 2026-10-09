@@ -26,6 +26,11 @@ METHOD_TERRAIN_MULTIPLIERS = {
     ("walk", "rough"): 1.2,
     ("cart", "rough"): 1.4,
     ("cart", "mountain"): 1.8,
+    # Riding Club translation: a mounted journey is still ordinary canonical
+    # movement, but terrain changes the horse's passage time rather than
+    # teleporting the rider between named destinations.
+    ("horse", "rough"): 1.1,
+    ("horse", "mountain"): 1.7,
     ("vessel", "water"): 1.0,
 }
 
