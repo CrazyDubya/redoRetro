@@ -178,6 +178,44 @@ class Property:
 
 
 @dataclass
+class BankAccount:
+    """A customer claim on a bank's canonical cash balance.
+
+    The balance is a financial liability, not a second physical money store:
+    deposits move cash into the bank and withdrawals move it back out.
+    """
+
+    id: str
+    bank_id: str
+    customer_id: str
+    account_type: str = "demand"
+    balance: float = 0.0
+    annual_interest_rate: float = 0.0
+    minimum_balance: float = 0.0
+    service_charge: float = 0.0
+    opened_at: datetime | None = None
+    last_accrued_at: datetime | None = None
+    status: str = "open"
+
+
+@dataclass
+class BankLoan:
+    """A bank-originated loan with separately auditable principal and interest."""
+
+    id: str
+    bank_id: str
+    borrower_id: str
+    principal: float
+    outstanding_principal: float
+    annual_interest_rate: float
+    issued_at: datetime
+    due_at: datetime | None = None
+    accrued_interest: float = 0.0
+    last_accrued_at: datetime | None = None
+    status: str = "open"
+
+
+@dataclass
 class JobOpening:
     id: str
     employer_id: str
@@ -409,6 +447,8 @@ class World:
         self.actors: dict[str, Actor] = {}
         self.businesses: dict[str, Business] = {}
         self.properties: dict[str, Property] = {}
+        self.bank_accounts: dict[str, BankAccount] = {}
+        self.bank_loans: dict[str, BankLoan] = {}
         self.job_openings: dict[str, JobOpening] = {}
         self.contracts: dict[str, Contract] = {}
         self.markets: dict[str, Market] = {}
@@ -442,6 +482,8 @@ class World:
             Actor: self.actors,
             Business: self.businesses,
             Property: self.properties,
+            BankAccount: self.bank_accounts,
+            BankLoan: self.bank_loans,
             JobOpening: self.job_openings,
             Contract: self.contracts,
             Market: self.markets,

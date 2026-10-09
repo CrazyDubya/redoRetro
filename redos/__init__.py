@@ -2,6 +2,8 @@
 
 from .model import (
     Actor,
+    BankAccount,
+    BankLoan,
     Business,
     CausalEvent,
     GoodType,
@@ -21,6 +23,17 @@ from .simulation import apply_transport_weather, effective_route_hours, set_rout
 from .harbor import build_harbor_world, harbor_audit
 from .equestrian import care_for_horse, ride
 from .enterprise import invest_in_capacity
+from .bank import (
+    accrue_deposit_interest,
+    accrue_loan_interest,
+    balance_sheet,
+    charge_account_fee,
+    deposit,
+    open_account,
+    originate_loan,
+    repay_loan,
+    withdraw,
+)
 from .realestate import add_property, buy_property, collect_rent, lease_property, update_property_market
 from .derby import add_horse, race_horses, train_horse
 from .transport import (
@@ -42,6 +55,8 @@ from .vertical import SliceState, build_integrated_world, run_autonomous_days
 
 __all__ = [
     "Actor",
+    "BankAccount",
+    "BankLoan",
     "Business",
     "CausalEvent",
     "GoodType",
@@ -68,6 +83,15 @@ __all__ = [
     "race_horses",
     "train_horse",
     "invest_in_capacity",
+    "open_account",
+    "deposit",
+    "withdraw",
+    "accrue_deposit_interest",
+    "originate_loan",
+    "accrue_loan_interest",
+    "repay_loan",
+    "charge_account_fee",
+    "balance_sheet",
     "add_property",
     "buy_property",
     "collect_rent",
