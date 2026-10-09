@@ -396,6 +396,7 @@ class Shipment:
     carrier_plan: tuple[str, ...] = ()
     relay_leg_counts: tuple[int, ...] = ()
     carrier_plan_index: int = 0
+    service_id: str | None = None
 
 
 @dataclass
@@ -429,6 +430,26 @@ class TransportAsset:
     return_route_ids: tuple[str, ...] = ()
     return_route_index: int = 0
     return_elapsed_hours: float = 0.0
+
+
+@dataclass
+class TransportService:
+    """An ordered, persistent vehicle service."""
+
+    id: str
+    asset_id: str
+    stop_place_ids: tuple[str, ...]
+    accepted_good_type_ids: tuple[str, ...] = ()
+    dwell_hours: float = 0.0
+    timetable_hours: tuple[float, ...] = ()
+    current_stop_index: int = 0
+    route_ids: tuple[str, ...] = ()
+    route_index: int = 0
+    elapsed_hours: float = 0.0
+    dwell_remaining_hours: float = 0.0
+    status: str = "ready"
+    completed_cycles: int = 0
+    late_hours: float = 0.0
 
 
 @dataclass
@@ -536,6 +557,7 @@ class World:
         self.movements: dict[str, Movement] = {}
         self.shipments: dict[str, Shipment] = {}
         self.transport_assets: dict[str, TransportAsset] = {}
+        self.transport_services: dict[str, TransportService] = {}
         self.horses: dict[str, HorseState] = {}
         self.transport_facilities: dict[str, TransportFacility] = {}
         self.recipes: dict[str, list[Any]] = {}
@@ -576,6 +598,7 @@ class World:
             Movement: self.movements,
             Shipment: self.shipments,
             TransportAsset: self.transport_assets,
+            TransportService: self.transport_services,
             HorseState: self.horses,
             TransportFacility: self.transport_facilities,
         }.get(type(entity))
