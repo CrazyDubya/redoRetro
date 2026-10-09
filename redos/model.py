@@ -240,6 +240,8 @@ class Movement:
     elapsed_hours: float
     duration_hours: float
     progress: float = 0.0
+    transport_asset_id: str | None = None
+    movement_mode: str = "walk"
 
 
 @dataclass
@@ -652,6 +654,25 @@ class World:
             raise ValueError("movement time cannot move backwards")
         arrived: list[str] = []
         for movement_id, movement in list(self.movements.items()):
+            transport_asset = self.transport_assets.get(movement.transport_asset_id or "")
+            if movement.transport_asset_id is not None and (
+                transport_asset is None
+                or transport_asset.assigned_shipment_id != movement.id
+                or transport_asset.unavailable_reason is not None
+            ):
+                if not any(
+                    event.kind == "passenger_delayed"
+                    and movement.id in event.entities
+                    and event.at == self.now
+                    for event in self.events
+                ):
+                    self.record(
+                        "passenger_delayed",
+                        f"{movement.actor_id} delayed because transport is unavailable",
+                        actors=[movement.actor_id],
+                        entities=[movement.id, *( [movement.transport_asset_id] if movement.transport_asset_id else [])],
+                    )
+                continue
             condition = self.route_conditions.get(movement.route_id)
             if condition is not None and not condition.accessible:
                 if not any(
@@ -685,6 +706,17 @@ class World:
             actor.travel_remaining_hours = max(0, int(movement.duration_hours - movement.elapsed_hours))
             if movement.progress >= 1.0:
                 self.move_actor(actor.id, movement.destination_id, reason=f"arrived via {movement.route_id}")
+                if transport_asset is not None:
+                    transport_asset.location_id = movement.destination_id
+                    from .transport import release_asset
+
+                    release_asset(self, transport_asset.id)
+                    self.record(
+                        "passenger_arrived",
+                        f"{actor.id} arrived aboard {transport_asset.id}",
+                        actors=[actor.id],
+                        entities=[movement.id, transport_asset.id, movement.destination_id],
+                    )
                 actor.traveling_to = None
                 actor.travel_remaining_hours = 0
                 del self.movements[movement_id]

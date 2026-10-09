@@ -26,6 +26,7 @@ from .transport import (
     interrupt_freight,
     divert_freight,
     abandon_freight,
+    board_passenger,
     replenish_asset,
     repair_asset,
 )
@@ -61,6 +62,7 @@ __all__ = [
     "interrupt_freight",
     "divert_freight",
     "abandon_freight",
+    "board_passenger",
     "replenish_asset",
     "repair_asset",
 ]

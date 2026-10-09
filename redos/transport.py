@@ -8,7 +8,7 @@ routes, and unloading/settlement occur only after physical arrival.
 from __future__ import annotations
 
 from .enterprise import allocate_contract
-from .model import Shipment, TransportAsset, TransportFacility, World
+from .model import Movement, Shipment, TransportAsset, TransportFacility, World
 from .simulation import effective_route_hours, route_is_accessible, route_path
 
 
@@ -40,6 +40,48 @@ def add_facility(world: World, facility: TransportFacility) -> TransportFacility
         raise KeyError(facility.place_id)
     world.add(facility)
     return facility
+
+
+def board_passenger(world: World, actor_id: str, asset_id: str, destination_id: str) -> Movement:
+    """Start one physical passenger movement aboard a persistent asset."""
+    actor = world.actors[actor_id]
+    asset = world.transport_assets[asset_id]
+    if actor.traveling_to is not None:
+        raise ValueError(f"{actor_id} is already travelling")
+    if asset.location_id != actor.location_id:
+        raise ValueError("passenger and carrier are not co-located")
+    if not asset.available or asset.assigned_shipment_id is not None:
+        raise ValueError(f"carrier {asset_id} is unavailable")
+    path = route_path(world, actor.location_id, destination_id, mode=asset.asset_type)
+    if not path:
+        raise ValueError("passenger has no accessible carrier route")
+    if len(path) != 1:
+        raise ValueError("passenger service requires one physical carrier leg")
+    route = path[0]
+    world._event_number += 1
+    movement = Movement(
+        id=f"movement-{world._event_number}",
+        actor_id=actor.id,
+        route_id=route.id,
+        origin_id=route.origin_id,
+        destination_id=route.destination_id,
+        elapsed_hours=0.0,
+        duration_hours=effective_route_hours(world, route, mode=asset.asset_type),
+        transport_asset_id=asset.id,
+        movement_mode=asset.asset_type,
+    )
+    world.add(movement)
+    assign_asset(world, asset.id, movement.id, kind="passenger")
+    actor.traveling_to = destination_id
+    actor.position = (world.places[route.origin_id].x, world.places[route.origin_id].y)
+    world.record(
+        "passenger_boarded",
+        f"{actor.id} boarded {asset.id}",
+        actors=[actor.id],
+        entities=[movement.id, asset.id, route.id],
+        data={"destination": destination_id},
+    )
+    return movement
 
 
 def _asset_load(world: World, asset_id: str) -> float:
@@ -84,7 +126,9 @@ def replenish_asset(world: World, asset_id: str, supply: str, quantity: float, *
         capacity = asset.supply_capacity.get(supply, float("inf"))
         asset.supplies[supply] = min(capacity, before + quantity)
         added = asset.supplies[supply] - before
-    if added > 0 and asset.condition > 0 and asset.readiness > 0 and asset.assigned_shipment_id is None:
+    if added > 0 and asset.condition > 0 and asset.readiness > 0 and (
+        asset.assigned_shipment_id is None or asset.assignment_kind == "passenger"
+    ):
         asset.available = True
         asset.unavailable_reason = None
     world.record("asset_replenished", f"{asset.id} received {added} {supply}", entities=[asset.id, *( [source_id] if source_id else [])], data={"supply": supply, "quantity": added})
