@@ -21,22 +21,32 @@ class Recipe:
     work_days: int = 1
 
 
-def produce(world: World, business_id: str, recipe: Recipe, *, causes: Iterable[str] = ()) -> str:
+def produce(
+    world: World,
+    business_id: str,
+    recipe: Recipe,
+    *,
+    scale: float = 1.0,
+    causes: Iterable[str] = (),
+) -> str:
     """Consume physical inputs and create a traceable output lot."""
+    if scale <= 0:
+        raise ValueError("production scale must be positive")
     consumed: list[str] = []
     consumption_causes: list[str] = []
     for good_id, quantity in recipe.inputs.items():
         event_count = len(world.events)
-        consumed.extend(world.consume_goods(business_id, good_id, quantity, causes=causes, reason=f"{recipe.id} input consumed"))
+        consumed.extend(world.consume_goods(business_id, good_id, quantity * scale, causes=causes, reason=f"{recipe.id} input consumed"))
         consumption_causes.extend(event.id for event in world.events[event_count:])
+    output_quantity = recipe.output_quantity * scale
     event = world.record(
         "production",
-        f"{business_id} produced {recipe.output_quantity} {recipe.output_good_id}",
+        f"{business_id} produced {output_quantity} {recipe.output_good_id}",
         entities=[business_id, recipe.id, recipe.output_good_id],
         causes=[*causes, *consumption_causes],
-        data={"inputs": recipe.inputs, "quantity": recipe.output_quantity},
+        data={"inputs": recipe.inputs, "quantity": output_quantity, "scale": scale},
     )
-    world.create_lot(recipe.output_good_id, recipe.output_quantity, holder_id=business_id, owner_id=business_id, provenance=(event.id, *consumed))
+    world.create_lot(recipe.output_good_id, output_quantity, holder_id=business_id, owner_id=business_id, provenance=(event.id, *consumed))
     return event.id
 
 

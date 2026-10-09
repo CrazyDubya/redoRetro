@@ -304,6 +304,26 @@ def invest_in_research(world: World, business_id: str, amount: float) -> None:
     world.record("research", f"{business_id} invested in research", actors=[business_id], data={"amount": amount})
 
 
+def invest_in_capacity(world: World, business_id: str, recipe_id: str, amount: float, capacity_gain: float = 1.0) -> float:
+    """Convert a business cash outlay into usable recipe capacity."""
+    if amount <= 0 or capacity_gain <= 0:
+        raise ValueError("capacity investment and gain must be positive")
+    business = world.businesses[business_id]
+    if business.cash + 1e-9 < amount:
+        raise ValueError("business cannot fund capacity investment")
+    business.cash -= amount
+    business.capital += amount
+    business.production_capacity[recipe_id] = business.production_capacity.get(recipe_id, 1.0) + capacity_gain
+    event = world.record(
+        "capacity_investment",
+        f"{business_id} invested in {recipe_id} capacity",
+        actors=[business_id],
+        entities=[recipe_id],
+        data={"amount": amount, "capacity_gain": capacity_gain, "capacity": business.production_capacity[recipe_id]},
+    )
+    return event.id
+
+
 def mule_bid(world: World, buyer_id: str, seller_id: str, good_type_id: str, quantity: float, amount: float) -> None:
     """A scarcity bid: a buyer pays a seller for an actual lot."""
     if amount <= 0:

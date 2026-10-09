@@ -19,6 +19,7 @@ from .rules import Rule, RuleBook
 from .simulation import apply_transport_weather, effective_route_hours, set_route_condition
 from .harbor import build_harbor_world, harbor_audit
 from .equestrian import care_for_horse, ride
+from .enterprise import invest_in_capacity
 from .derby import add_horse, race_horses, train_horse
 from .transport import (
     add_asset,
@@ -63,6 +64,7 @@ __all__ = [
     "add_horse",
     "race_horses",
     "train_horse",
+    "invest_in_capacity",
     "SliceState",
     "build_integrated_world",
     "run_autonomous_days",

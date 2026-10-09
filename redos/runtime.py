@@ -246,8 +246,14 @@ def _adjudicate_businesses(world: World) -> None:
             target = business.inventory_targets.get(recipe.output_good_id, recipe.output_quantity)
             if world.quantity_held(business.id, recipe.output_good_id) >= target:
                 continue
-            if all(world.quantity_held(business.id, good_id) >= quantity for good_id, quantity in recipe.inputs.items()):
-                produce(world, business.id, recipe)
+            capacity = business.production_capacity.get(recipe.id, 1.0)
+            needed_output = max(0.0, target - world.quantity_held(business.id, recipe.output_good_id))
+            batches = min(capacity, needed_output / recipe.output_quantity)
+            for good_id, quantity in recipe.inputs.items():
+                if quantity > 0:
+                    batches = min(batches, world.quantity_held(business.id, good_id) / quantity)
+            if batches > 1e-9:
+                produce(world, business.id, recipe, scale=batches)
     for seller_id, buyer_id, good_id, quantity, price in world.runtime.get("business_flows", ()):
         seller = world.businesses[seller_id]
         buyer = world.businesses[buyer_id]
