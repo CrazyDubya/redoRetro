@@ -247,6 +247,43 @@ class InsuranceClaim:
 
 
 @dataclass
+class Security:
+    """A tradable business claim with a canonical market price history."""
+
+    id: str
+    name: str
+    issuer_id: str
+    outstanding_shares: float
+    price: float
+    price_history: list[tuple[datetime, float]] = field(default_factory=list)
+
+
+@dataclass
+class SecurityHolding:
+    """One owner's canonical position in a security."""
+
+    id: str
+    owner_id: str
+    security_id: str
+    quantity: float
+    average_cost: float = 0.0
+
+
+@dataclass
+class TradeOrder:
+    """An auditable completed or rejected order, not a second portfolio."""
+
+    id: str
+    trader_id: str
+    security_id: str
+    side: str
+    quantity: float
+    limit_price: float
+    status: str = "open"
+    executed_at: datetime | None = None
+
+
+@dataclass
 class JobOpening:
     id: str
     employer_id: str
@@ -482,6 +519,9 @@ class World:
         self.bank_loans: dict[str, BankLoan] = {}
         self.insurance_policies: dict[str, InsurancePolicy] = {}
         self.insurance_claims: dict[str, InsuranceClaim] = {}
+        self.securities: dict[str, Security] = {}
+        self.security_holdings: dict[str, SecurityHolding] = {}
+        self.trade_orders: dict[str, TradeOrder] = {}
         self.job_openings: dict[str, JobOpening] = {}
         self.contracts: dict[str, Contract] = {}
         self.markets: dict[str, Market] = {}
@@ -519,6 +559,9 @@ class World:
             BankLoan: self.bank_loans,
             InsurancePolicy: self.insurance_policies,
             InsuranceClaim: self.insurance_claims,
+            Security: self.securities,
+            SecurityHolding: self.security_holdings,
+            TradeOrder: self.trade_orders,
             JobOpening: self.job_openings,
             Contract: self.contracts,
             Market: self.markets,
