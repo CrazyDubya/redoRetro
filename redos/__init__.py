@@ -19,6 +19,9 @@ from .model import (
     World,
     InsuranceClaim,
     InsurancePolicy,
+    Security,
+    SecurityHolding,
+    TradeOrder,
 )
 from .rules import Rule, RuleBook
 from .simulation import apply_transport_weather, effective_route_hours, set_route_condition
@@ -37,6 +40,7 @@ from .bank import (
     withdraw,
 )
 from .insurance import approve_claim, file_claim, insurer_exposure, issue_policy, settle_claim
+from .insider import buy_information, execute_trade, issue_security, portfolio_value, publish_wire_event
 from .realestate import add_property, buy_property, collect_rent, lease_property, update_property_market
 from .derby import add_horse, race_horses, train_horse
 from .transport import (
@@ -62,6 +66,9 @@ __all__ = [
     "BankLoan",
     "InsurancePolicy",
     "InsuranceClaim",
+    "Security",
+    "SecurityHolding",
+    "TradeOrder",
     "Business",
     "CausalEvent",
     "GoodType",
@@ -102,6 +109,11 @@ __all__ = [
     "approve_claim",
     "settle_claim",
     "insurer_exposure",
+    "issue_security",
+    "execute_trade",
+    "publish_wire_event",
+    "buy_information",
+    "portfolio_value",
     "add_property",
     "buy_property",
     "collect_rent",
