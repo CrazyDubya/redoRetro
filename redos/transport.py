@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from .enterprise import allocate_contract
 from .model import Movement, Shipment, TransportAsset, TransportFacility, TransportService, World
-from .simulation import effective_route_hours, route_is_accessible, route_path
+from .simulation import best_route, effective_route_hours, route_is_accessible, route_path
 
 
 PACE_MULTIPLIERS = {
@@ -372,6 +372,7 @@ def dispatch_freight(
     carrier_plan: tuple[str, ...] | None = None,
     relay_leg_counts: tuple[int, ...] | None = None,
     service_id: str | None = None,
+    route_ids: tuple[str, ...] | None = None,
 ) -> Shipment:
     """Create a queued physical freight journey without moving the clock."""
     if loading_hours <= 0 or unloading_hours <= 0:
@@ -411,7 +412,19 @@ def dispatch_freight(
     planned_carriers = tuple(carrier_plan or (carrier_id,))
     if not planned_carriers or planned_carriers[0] != carrier_id:
         raise ValueError("carrier plan must begin with the dispatch carrier")
-    path = route_path(world, contract.origin_id, contract.destination_id, mode=None if carrier_plan else asset.asset_type)
+    if route_ids is not None:
+        if not route_ids:
+            raise ValueError("explicit route cannot be empty")
+        path = [world.routes[route_id] for route_id in route_ids]
+        previous = contract.origin_id
+        for route in path:
+            if route.origin_id != previous or not route_is_accessible(world, route, mode=asset.asset_type):
+                raise ValueError("explicit route is not a contiguous accessible carrier path")
+            previous = route.destination_id
+        if previous != contract.destination_id:
+            raise ValueError("explicit route does not reach the contract destination")
+    else:
+        path = best_route(world, contract.origin_id, contract.destination_id, mode=None if carrier_plan else asset.asset_type)
     if not path:
         raise ValueError("contract has no physical route")
     planned_legs = tuple(relay_leg_counts or (len(path),))
