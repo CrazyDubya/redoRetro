@@ -162,6 +162,22 @@ class Business:
 
 
 @dataclass
+class Property:
+    """A physical real-estate asset with an auditable economic value."""
+
+    id: str
+    name: str
+    place_id: str
+    property_type: str
+    owner_id: str
+    market_value: float
+    monthly_rent: float = 0.0
+    occupied_by_id: str | None = None
+    mortgage_balance: float = 0.0
+    value_history: list[tuple[datetime, float]] = field(default_factory=list)
+
+
+@dataclass
 class JobOpening:
     id: str
     employer_id: str
@@ -392,6 +408,7 @@ class World:
         self.households: dict[str, Household] = {}
         self.actors: dict[str, Actor] = {}
         self.businesses: dict[str, Business] = {}
+        self.properties: dict[str, Property] = {}
         self.job_openings: dict[str, JobOpening] = {}
         self.contracts: dict[str, Contract] = {}
         self.markets: dict[str, Market] = {}
@@ -424,6 +441,7 @@ class World:
             Household: self.households,
             Actor: self.actors,
             Business: self.businesses,
+            Property: self.properties,
             JobOpening: self.job_openings,
             Contract: self.contracts,
             Market: self.markets,
