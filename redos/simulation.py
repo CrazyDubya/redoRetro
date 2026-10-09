@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 from datetime import timedelta
+import heapq
 from typing import Iterable
 
 from .living import activity_for_hour
@@ -56,7 +57,10 @@ def route_is_accessible(world: World, route: Route, *, mode: str | None = None) 
 def effective_route_hours(world: World, route: Route, *, mode: str | None = None) -> float:
     """Return passage time after terrain and current conditions are applied."""
     effective_mode = mode or route.mode
-    if not route_is_accessible(world, route, mode=effective_mode):
+    # A generic map search (mode=None) may traverse a route whose nominal
+    # mode is road/water while a later carrier-specific adjudication applies
+    # the route's allowed_modes constraint.
+    if not route_is_accessible(world, route, mode=mode):
         raise ValueError(f"route {route.id} is inaccessible for {effective_mode}")
     condition = route_condition(world, route.id)
     terrain_multiplier = TERRAIN_TRAVEL_MULTIPLIERS.get(route.terrain, 1.0)
@@ -173,6 +177,38 @@ def route_path(world: World, origin_id: str, destination_id: str, *, mode: str |
                 return next_path
             visited.add(route.destination_id)
             queue.append((route.destination_id, next_path))
+    return []
+
+
+def best_route(
+    world: World,
+    origin_id: str,
+    destination_id: str,
+    *,
+    mode: str | None = None,
+    max_hours: float | None = None,
+) -> list[Route]:
+    """Choose the fastest currently accessible route, including waypoints."""
+    if origin_id == destination_id:
+        return []
+    frontier: list[tuple[float, str, tuple[str, ...]]] = [(0.0, origin_id, ())]
+    best_seen: dict[str, float] = {origin_id: 0.0}
+    while frontier:
+        elapsed, place_id, route_ids = heapq.heappop(frontier)
+        if place_id == destination_id:
+            return [world.routes[route_id] for route_id in route_ids]
+        if elapsed > best_seen.get(place_id, float("inf")) + 1e-9:
+            continue
+        for route in world.routes.values():
+            if route.origin_id != place_id or route.destination_id in route_ids or not route_is_accessible(world, route, mode=mode):
+                continue
+            next_elapsed = elapsed + effective_route_hours(world, route, mode=mode)
+            if max_hours is not None and next_elapsed > max_hours + 1e-9:
+                continue
+            if next_elapsed + 1e-9 >= best_seen.get(route.destination_id, float("inf")):
+                continue
+            best_seen[route.destination_id] = next_elapsed
+            heapq.heappush(frontier, (next_elapsed, route.destination_id, (*route_ids, route.id)))
     return []
 
 

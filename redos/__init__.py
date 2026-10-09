@@ -25,7 +25,7 @@ from .model import (
     TradeOrder,
 )
 from .rules import Rule, RuleBook
-from .simulation import apply_transport_weather, effective_route_hours, set_route_condition
+from .simulation import apply_transport_weather, best_route, effective_route_hours, set_route_condition
 from .harbor import build_harbor_world, harbor_audit
 from .equestrian import care_for_horse, ride
 from .enterprise import invest_in_capacity
@@ -92,6 +92,7 @@ __all__ = [
     "RuleBook",
     "apply_transport_weather",
     "effective_route_hours",
+    "best_route",
     "set_route_condition",
     "build_harbor_world",
     "harbor_audit",
