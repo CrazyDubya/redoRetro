@@ -97,6 +97,9 @@ def assign_asset(world: World, asset_id: str, assignment_id: str, *, kind: str) 
         raise ValueError(f"carrier {asset_id} still holds unresolved cargo")
     if asset.condition <= 0 or asset.readiness <= 0:
         raise ValueError(f"carrier {asset_id} is not operational")
+    horse = world.horses.get(asset.id)
+    if asset.asset_type == "horse" and horse is not None and horse.injury > 0:
+        raise ValueError(f"horse {asset_id} is injured")
     asset.assigned_shipment_id = assignment_id
     asset.assignment_kind = kind
     asset.available = False
