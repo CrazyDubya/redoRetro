@@ -157,6 +157,8 @@ class Business:
     debt: float = 0.0
     research: float = 0.0
     inventory_targets: dict[str, float] = field(default_factory=dict)
+    capital: float = 0.0
+    production_capacity: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
