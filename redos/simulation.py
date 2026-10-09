@@ -60,7 +60,7 @@ def effective_route_hours(world: World, route: Route, *, mode: str | None = None
 
 
 def _weather_multiplier(route: Route, *, wind: float, waterway: str) -> float:
-    if route.mode != "water" and route.terrain != "water":
+    if route.mode not in {"water", "vessel"} and route.terrain != "water":
         return 1.0
     return WATERWAY_TRAVEL_MULTIPLIERS[waterway] * (1.0 + 0.25 * abs(wind))
 
@@ -119,6 +119,17 @@ def apply_transport_weather(
     selected = tuple(route_ids)
     if not selected:
         raise ValueError("weather must affect at least one route")
+    # Validate the complete update before recording the external stimulus or
+    # changing any route.  A malformed multi-route weather report is atomic.
+    for route_id in selected:
+        if route_id not in world.routes:
+            raise KeyError(route_id)
+    if not -1.0 <= wind <= 1.0:
+        raise ValueError("wind must be normalized between -1 and 1")
+    if waterway not in WATERWAY_TRAVEL_MULTIPLIERS:
+        raise ValueError(f"unknown waterway condition {waterway!r}")
+    if travel_multiplier <= 0:
+        raise ValueError("route travel multiplier must be positive")
     event = world.record(
         "transport_weather",
         f"{weather} affected transport routes",
@@ -182,43 +193,52 @@ def _start_next_leg(world: World, actor: Actor, target_id: str) -> bool:
     # Passenger services are ordinary route choices declared in world data.
     # The actor first walks to the boarding place, then boards if the carrier
     # is physically present and available; there is no teleporting fallback.
-    for service in world.runtime.get("passenger_services", ()):
-        if len(service) < 3 or service[2] != target_id or service[0] not in world.transport_assets:
-            continue
+    services = [
+        service for service in world.runtime.get("passenger_services", ())
+        if len(service) >= 3 and service[2] == target_id and service[0] in world.transport_assets
+    ]
+    # Prefer a physically present service, trying every candidate before
+    # deciding that a passenger must wait or use an ordinary land route.
+    for service in services:
         asset_id, boarding_place_id, _destination_id = service[:3]
         if actor.location_id != boarding_place_id:
-            boarding_path = route_path(world, actor.location_id, boarding_place_id, mode="walk")
-            if not boarding_path:
-                continue
-            route = boarding_path[0]
-            movement = world.begin_movement(actor.id, route.id)
-            world.record(
-                "travel_started",
-                f"{actor.id} travelled toward passenger boarding at {boarding_place_id}",
-                actors=[actor.id],
-                entities=[route.id, boarding_place_id],
-                data={"travel_hours": movement.duration_hours, "distance": route.distance},
-            )
-            return True
+            continue
         from .transport import board_passenger
 
         try:
             board_passenger(world, actor.id, asset_id, target_id)
             return True
         except ValueError:
-            if not any(
-                event.kind == "passenger_service_unavailable"
-                and actor.id in event.actors
-                and event.at == world.now
-                for event in world.events
-            ):
-                world.record(
-                    "passenger_service_unavailable",
-                    f"{actor.id} could not board {asset_id}",
-                    actors=[actor.id],
-                    entities=[asset_id, target_id],
-                )
-            return False
+            continue
+    for service in services:
+        asset_id, boarding_place_id, _destination_id = service[:3]
+        boarding_path = route_path(world, actor.location_id, boarding_place_id, mode="walk")
+        if not boarding_path:
+            continue
+        route = boarding_path[0]
+        movement = world.begin_movement(actor.id, route.id)
+        world.record(
+            "travel_started",
+            f"{actor.id} travelled toward passenger boarding at {boarding_place_id}",
+            actors=[actor.id],
+            entities=[route.id, boarding_place_id],
+            data={"travel_hours": movement.duration_hours, "distance": route.distance, "service": asset_id},
+        )
+        return True
+    if services:
+        if not any(
+            event.kind == "passenger_service_unavailable"
+            and actor.id in event.actors
+            and event.at == world.now
+            for event in world.events
+        ):
+            world.record(
+                "passenger_service_unavailable",
+                f"{actor.id} could not board any service toward {target_id}",
+                actors=[actor.id],
+                entities=[target_id, *(service[0] for service in services)],
+            )
+        return False
     path = route_path(world, actor.location_id, target_id, mode="walk")
     if not path:
         return False

@@ -30,6 +30,7 @@ from .transport import (
     board_passenger,
     replenish_asset,
     repair_asset,
+    resolve_failed_cargo,
 )
 from .vertical import SliceState, build_integrated_world, run_autonomous_days
 
@@ -68,4 +69,5 @@ __all__ = [
     "board_passenger",
     "replenish_asset",
     "repair_asset",
+    "resolve_failed_cargo",
 ]

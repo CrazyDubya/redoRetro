@@ -26,10 +26,6 @@ def build_harbor_world(*, seed: int = 0) -> SliceState:
         Route("brooklyn-dock", "brooklyn-landing", "dock", 2.0, 1, "water", "water", ("vessel",)),
         Route("dock-staten", "dock", "staten-landing", 2.5, 1, "water", "water", ("vessel",)),
         Route("staten-dock", "staten-landing", "dock", 2.5, 1, "water", "water", ("vessel",)),
-        Route("staten-warehouse", "staten-landing", "warehouse", 3.0, 1, "water", "water", ("vessel",)),
-        Route("warehouse-staten", "warehouse", "staten-landing", 3.0, 1, "water", "water", ("vessel",)),
-        Route("staten-workshop", "staten-landing", "workshop", 3.0, 1, "water", "water", ("vessel",)),
-        Route("workshop-staten", "workshop", "staten-landing", 3.0, 1, "water", "water", ("vessel",)),
         Route("newjersey-dock", "newjersey-landing", "dock", 2.0, 1, "cart", "road", ("cart",)),
         Route("dock-newjersey", "dock", "newjersey-landing", 2.0, 1, "cart", "road", ("cart",)),
     )
@@ -44,11 +40,15 @@ def build_harbor_world(*, seed: int = 0) -> SliceState:
         if route.origin_id == "workshop" and route.destination_id == "warehouse":
             route.mode = "cart"
             route.allowed_modes = ("cart",)
+        if {route.origin_id, route.destination_id} == {"dock", "workshop"}:
+            route.mode = "cart"
+            route.allowed_modes = ("cart",)
 
     for business in (
         Business("brooklyn-supplier", "Brooklyn Supplier", "brooklyn-landing", "supplier", cash=5_000.0),
         Business("staten-farm", "Staten Island Farm", "staten-landing", "farm", cash=5_000.0),
         Business("newjersey-transshipper", "New Jersey Transshipper", "newjersey-landing", "warehouse", cash=5_000.0),
+        Business("dock-supplier", "Manhattan Dock Supplier", "dock", "supplier", cash=5_000.0),
     ):
         world.add(business)
     world.create_lot("grain", 40.0, holder_id="staten-farm", owner_id="staten-farm", provenance=("staten harvest",))
@@ -63,15 +63,21 @@ def build_harbor_world(*, seed: int = 0) -> SliceState:
         TransportFacility("manhattan-workshop", "workshop", handling_capacity=1, storage_access_id="workshop-business"),
     ):
         add_facility(world, facility)
-    add_asset(world, TransportAsset("manhattan-sloop", "Manhattan Sloop", "vessel", "dock", "warehouse-business", capacity=20, fuel=200, fuel_capacity=200, fuel_burn_per_hour=0.1, operating_cost_per_hour=1.0))
-    add_asset(world, TransportAsset("staten-sloop", "Staten Sloop", "vessel", "staten-landing", "staten-farm", capacity=20, fuel=200, fuel_capacity=200, fuel_burn_per_hour=0.1, operating_cost_per_hour=1.0))
-    add_asset(world, TransportAsset("warehouse-cart", "Warehouse Cart", "cart", "warehouse", "warehouse-business", capacity=10, fuel=200, fuel_capacity=200, fuel_burn_per_hour=0.02, operating_cost_per_hour=0.5))
+    add_asset(world, TransportAsset("manhattan-sloop", "Manhattan Sloop", "vessel", "dock", "dock-supplier", capacity=20, home_location_id="dock", fuel=200, fuel_capacity=200, fuel_burn_per_hour=0.1, operating_cost_per_hour=1.0))
+    add_asset(world, TransportAsset("staten-sloop", "Staten Sloop", "vessel", "staten-landing", "staten-farm", capacity=20, home_location_id="staten-landing", fuel=200, fuel_capacity=200, fuel_burn_per_hour=0.1, operating_cost_per_hour=1.0))
+    add_asset(world, TransportAsset("warehouse-cart", "Warehouse Cart", "cart", "newjersey-landing", "newjersey-transshipper", capacity=10, home_location_id="newjersey-landing", fuel=200, fuel_capacity=200, fuel_burn_per_hour=0.02, operating_cost_per_hour=0.5))
+    add_asset(world, TransportAsset("dock-cart", "Dock Cart", "cart", "dock", "dock-supplier", capacity=10, home_location_id="dock", fuel=200, fuel_capacity=200, fuel_burn_per_hour=0.02, operating_cost_per_hour=0.5))
     world.runtime["transport_services"] = (
-        ("staten-sloop", "staten-landing-facility", "manhattan-workshop"),
-        ("warehouse-cart", "manhattan-warehouse", "manhattan-workshop"),
+        ("staten-sloop", "staten-landing-facility", "manhattan-dock"),
+        ("manhattan-sloop", "manhattan-dock", "brooklyn-landing-facility"),
+        ("warehouse-cart", "newjersey-landing-facility", "manhattan-workshop"),
+        ("dock-cart", "manhattan-dock", "manhattan-workshop"),
     )
     world.runtime["input_flows"] = (
-        ("staten-farm", "workshop-business", "grain", 5.0, 4.0),
+        ("staten-farm", "dock-supplier", "grain", 5.0, 4.0),
+        ("dock-supplier", "workshop-business", "grain", 3.0, 4.0),
+        ("newjersey-transshipper", "workshop-business", "grain", 3.0, 4.0),
+        ("dock-supplier", "brooklyn-supplier", "grain", 2.0, 4.0),
         ("workshop-business", "tavern-business", "flour", 1.0, 8.0),
     )
     return state
@@ -104,7 +110,14 @@ def harbor_audit(world: World) -> dict[str, Any]:
         "goods_moved": dict(moved),
         "asset_utilization": utilization,
         "facility_utilization": {
-            facility.id: {"queue": list(facility.queue), "arrival_queue": list(facility.arrival_queue), "active": list(facility.active_shipments)}
+            facility.id: {
+                "queue": list(facility.queue),
+                "arrival_queue": list(facility.arrival_queue),
+                "active": list(facility.active_shipments),
+                "handling_hours": facility.handling_hours,
+                "completed_operations": facility.completed_operations,
+                "peak_queue_length": facility.peak_queue_length,
+            }
             for facility in world.transport_facilities.values()
         },
         "transport_costs": sum(event.data.get("amount", 0.0) for event in world.events if event.kind == "transport_cost_accrued"),
