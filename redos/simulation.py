@@ -29,6 +29,13 @@ METHOD_TERRAIN_MULTIPLIERS = {
     ("vessel", "water"): 1.0,
 }
 
+WATERWAY_TRAVEL_MULTIPLIERS = {
+    "calm": 1.0,
+    "choppy": 1.25,
+    "storm": 2.0,
+    "ice": 3.0,
+}
+
 
 def route_condition(world: World, route_id: str) -> RouteCondition:
     return world.route_conditions.get(route_id, RouteCondition(route_id))
@@ -52,6 +59,12 @@ def effective_route_hours(world: World, route: Route, *, mode: str | None = None
     return max(1.0, route.travel_days * 24.0 * terrain_multiplier * method_multiplier * condition.travel_multiplier)
 
 
+def _weather_multiplier(route: Route, *, wind: float, waterway: str) -> float:
+    if route.mode != "water" and route.terrain != "water":
+        return 1.0
+    return WATERWAY_TRAVEL_MULTIPLIERS[waterway] * (1.0 + 0.25 * abs(wind))
+
+
 def set_route_condition(
     world: World,
     route_id: str,
@@ -59,13 +72,21 @@ def set_route_condition(
     accessible: bool = True,
     travel_multiplier: float = 1.0,
     hazard: str | None = None,
+    wind: float = 0.0,
+    waterway: str = "calm",
     causes: tuple[str, ...] = (),
 ) -> RouteCondition:
     if route_id not in world.routes:
         raise KeyError(route_id)
     if travel_multiplier <= 0:
         raise ValueError("route travel multiplier must be positive")
-    condition = RouteCondition(route_id, accessible, travel_multiplier, hazard)
+    if not -1.0 <= wind <= 1.0:
+        raise ValueError("wind must be normalized between -1 and 1")
+    if waterway not in WATERWAY_TRAVEL_MULTIPLIERS:
+        raise ValueError(f"unknown waterway condition {waterway!r}")
+    route = world.routes[route_id]
+    effective_multiplier = travel_multiplier * _weather_multiplier(route, wind=wind, waterway=waterway)
+    condition = RouteCondition(route_id, accessible, effective_multiplier, hazard, wind, waterway)
     world.route_conditions[route_id] = condition
     world.record(
         "route_condition_changed",
@@ -76,9 +97,49 @@ def set_route_condition(
             "accessible": accessible,
             "travel_multiplier": travel_multiplier,
             "hazard": hazard,
+            "wind": wind,
+            "waterway": waterway,
         },
     )
     return condition
+
+
+def apply_transport_weather(
+    world: World,
+    route_ids: Iterable[str],
+    *,
+    weather: str,
+    wind: float = 0.0,
+    waterway: str = "calm",
+    accessible: bool | None = None,
+    travel_multiplier: float = 1.0,
+    causes: tuple[str, ...] = (),
+) -> str:
+    """Inject one auditable weather stimulus across selected transport routes."""
+    selected = tuple(route_ids)
+    if not selected:
+        raise ValueError("weather must affect at least one route")
+    event = world.record(
+        "transport_weather",
+        f"{weather} affected transport routes",
+        entities=selected,
+        causes=causes,
+        data={"wind": wind, "waterway": waterway},
+    )
+    blocked = accessible if accessible is not None else waterway in {"storm", "ice"}
+    route_accessible = accessible if accessible is not None else not blocked
+    for route_id in selected:
+        set_route_condition(
+            world,
+            route_id,
+            accessible=route_accessible,
+            travel_multiplier=travel_multiplier,
+            hazard=weather,
+            wind=wind,
+            waterway=waterway,
+            causes=(event.id,),
+        )
+    return event.id
 
 
 def route_path(world: World, origin_id: str, destination_id: str, *, mode: str | None = None) -> list[Route]:

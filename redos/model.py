@@ -51,6 +51,8 @@ class RouteCondition:
     accessible: bool = True
     travel_multiplier: float = 1.0
     hazard: str | None = None
+    wind: float = 0.0
+    waterway: str = "calm"
 
 
 @dataclass
@@ -663,6 +665,11 @@ class World:
                         f"{movement.actor_id} delayed by route conditions",
                         actors=[movement.actor_id],
                         entities=[movement.id, movement.route_id],
+                        causes=tuple(
+                            event.id
+                            for event in reversed(self.events)
+                            if event.kind == "route_condition_changed" and movement.route_id in event.entities
+                        )[:1],
                         data={"hazard": condition.hazard},
                     )
                 continue
