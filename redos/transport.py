@@ -285,25 +285,39 @@ def _asset_load(world: World, asset_id: str) -> float:
 def assign_asset(world: World, asset_id: str, assignment_id: str, *, kind: str) -> TransportAsset:
     """Reserve one persistent asset for exactly one current obligation."""
     asset = world.transport_assets[asset_id]
-    if not asset.available or asset.assigned_shipment_id is not None:
-        raise ValueError(f"carrier {asset_id} is unavailable")
-    if asset.reserved_for_shipment_id not in {None, assignment_id}:
-        raise ValueError(f"carrier {asset_id} is reserved for another shipment")
-    if asset.cargo_clearance_pending or _asset_load(world, asset.id) > 1e-9:
-        raise ValueError(f"carrier {asset_id} still holds unresolved cargo")
-    if asset.condition <= 0 or asset.readiness <= 0:
-        raise ValueError(f"carrier {asset_id} is not operational")
-    if len(asset.crew_ids) < asset.minimum_crew:
-        raise ValueError(f"carrier {asset_id} lacks its required crew")
-    horse = world.horses.get(asset.id)
-    if asset.asset_type == "horse" and horse is not None and horse.injury > 0:
-        raise ValueError(f"horse {asset_id} is injured")
+    _validate_asset_prerequisites(world, asset, assignment_id=assignment_id)
     asset.assigned_shipment_id = assignment_id
     asset.assignment_kind = kind
     asset.available = False
     asset.unavailable_reason = None
     world.record("asset_assigned", f"{asset.id} assigned to {assignment_id}", entities=[asset.id, assignment_id], data={"kind": kind})
     return asset
+
+
+def _validate_asset_prerequisites(
+    world: World,
+    asset: TransportAsset,
+    *,
+    assignment_id: str | None = None,
+    service_id: str | None = None,
+) -> None:
+    """Pure preflight used before a contract or relay can mutate the world."""
+    if not asset.available or asset.assigned_shipment_id is not None:
+        raise ValueError(f"carrier {asset.id} is unavailable")
+    if asset.reserved_for_shipment_id not in {None, assignment_id}:
+        raise ValueError(f"carrier {asset.id} is reserved for another shipment")
+    if asset.cargo_clearance_pending or _asset_load(world, asset.id) > 1e-9:
+        raise ValueError(f"carrier {asset.id} still holds unresolved cargo")
+    if asset.condition <= 0 or asset.readiness <= 0:
+        raise ValueError(f"carrier {asset.id} is not operational")
+    for service in world.transport_services.values():
+        if service.asset_id == asset.id and service.id != service_id and service.status not in {"ready", "waiting_asset"}:
+            raise ValueError(f"carrier {asset.id} is committed to service {service.id}")
+    if len(asset.crew_ids) < asset.minimum_crew:
+        raise ValueError(f"carrier {asset.id} lacks its required crew")
+    horse = world.horses.get(asset.id)
+    if asset.asset_type == "horse" and horse is not None and horse.injury > 0:
+        raise ValueError(f"horse {asset.id} is injured")
 
 
 def release_asset(
@@ -443,13 +457,15 @@ def dispatch_freight(
     planned_carriers = tuple(carrier_plan or (carrier_id,))
     if not planned_carriers or planned_carriers[0] != carrier_id:
         raise ValueError("carrier plan must begin with the dispatch carrier")
+    if len(set(planned_carriers)) != len(planned_carriers):
+        raise ValueError("relay carrier plan cannot reuse one asset")
     if route_ids is not None:
         if not route_ids:
             raise ValueError("explicit route cannot be empty")
         path = [world.routes[route_id] for route_id in route_ids]
         previous = contract.origin_id
         for route in path:
-            if route.origin_id != previous or not route_is_accessible(world, route, mode=asset.asset_type):
+            if route.origin_id != previous:
                 raise ValueError("explicit route is not a contiguous accessible carrier path")
             previous = route.destination_id
         if previous != contract.destination_id:
@@ -466,9 +482,15 @@ def dispatch_freight(
         planned_asset = world.transport_assets.get(planned_id)
         if planned_asset is None:
             raise KeyError(planned_id)
+        _validate_asset_prerequisites(
+            world,
+            planned_asset,
+            assignment_id=None if plan_index == 0 else f"shipment-{len(world.shipments) + 1}",
+            service_id=service_id if plan_index == 0 else None,
+        )
+        if contract.quantity > planned_asset.capacity + 1e-9:
+            raise ValueError(f"carrier {planned_id} capacity exceeded")
         if plan_index > 0:
-            if not planned_asset.available or planned_asset.assigned_shipment_id is not None or planned_asset.reserved_for_shipment_id is not None:
-                raise ValueError(f"relay carrier {planned_id} is unavailable")
             if planned_asset.location_id != path[route_offset].origin_id:
                 raise ValueError(f"relay carrier {planned_id} is not at its handoff point")
         for route in path[route_offset:route_offset + planned_legs[plan_index]]:
@@ -628,7 +650,11 @@ def _try_relay_handoff(world: World, shipment: Shipment) -> bool:
     ):
         return False
     contract = world.contracts[shipment.contract_id]
+    _validate_asset_prerequisites(world, next_asset, assignment_id=shipment.id)
     quantity = world.quantity_held(current_asset.id, contract.good_type_id)
+    if quantity + 1e-9 < contract.quantity:
+        _fail(world, shipment, "relay handoff cargo unavailable")
+        return False
     if quantity > next_asset.capacity + 1e-9:
         _fail(world, shipment, f"relay carrier {next_asset.id} capacity exceeded")
         return False
@@ -757,11 +783,99 @@ def _begin_reposition(world: World, asset: TransportAsset) -> None:
     )
 
 
+def _begin_cargo_recovery(world: World, shipment: Shipment, asset: TransportAsset, seller_location_id: str) -> bool:
+    """Start an empty-handed-by-person, cargo-bearing physical return.
+
+    The cargo stays on the failed carrier until this route reaches the
+    seller.  Recovery never uses ``transfer_goods`` merely because a holder's
+    last waypoint happens to equal the seller's place.
+    """
+    initial_elapsed = 0.0
+    if shipment.current_route_index < len(shipment.route_ids) and shipment.elapsed_hours > 1e-9:
+        current_route = world.routes[shipment.route_ids[shipment.current_route_index]]
+        forward_duration = effective_route_hours(world, current_route, mode=asset.asset_type)
+        reverse_candidates = [
+            route
+            for route in world.routes.values()
+            if route.origin_id == current_route.destination_id
+            and route.destination_id == current_route.origin_id
+            and route_is_accessible(world, route, mode=asset.asset_type)
+        ]
+        if not reverse_candidates:
+            asset.available = False
+            asset.unavailable_reason = "no physical reverse route for cargo recovery"
+            return False
+        reverse_route = min(
+            reverse_candidates,
+            key=lambda route: effective_route_hours(world, route, mode=asset.asset_type),
+        )
+        reverse_duration = effective_route_hours(world, reverse_route, mode=asset.asset_type)
+        initial_elapsed = reverse_duration * max(0.0, 1.0 - shipment.elapsed_hours / forward_duration)
+        onward = route_path(world, current_route.origin_id, seller_location_id, mode=asset.asset_type)
+        path = [reverse_route, *onward]
+    else:
+        path = route_path(world, asset.location_id, seller_location_id, mode=asset.asset_type)
+    if not path:
+        asset.available = False
+        asset.unavailable_reason = "no physical cargo recovery route"
+        return False
+    asset.assigned_shipment_id = f"cargo-recovery:{shipment.id}"
+    asset.assignment_kind = "cargo_recovery"
+    asset.available = False
+    asset.unavailable_reason = None
+    asset.return_route_ids = tuple(route.id for route in path)
+    asset.return_route_index = 0
+    asset.return_elapsed_hours = initial_elapsed
+    world.record(
+        "cargo_recovery_started",
+        f"{shipment.id} cargo began physical recovery",
+        entities=[shipment.id, asset.id, *asset.return_route_ids],
+        data={"destination": seller_location_id, "mid_route": initial_elapsed > 0},
+    )
+    return True
+
+
 def _advance_asset_reposition(world: World, asset: TransportAsset, hours: float) -> None:
     remaining = hours
-    while remaining > 1e-9 and asset.assignment_kind == "reposition":
+    while remaining > 1e-9 and asset.assignment_kind in {"reposition", "cargo_recovery"}:
         if asset.return_route_index >= len(asset.return_route_ids):
-            asset.location_id = asset.home_location_id or asset.location_id
+            destination_id = asset.home_location_id or asset.location_id
+            if asset.assignment_kind == "cargo_recovery":
+                shipment_id = asset.assigned_shipment_id.split(":", 1)[1] if asset.assigned_shipment_id else ""
+                shipment = world.shipments.get(shipment_id)
+                if shipment is None or shipment.status != "failed":
+                    asset.available = False
+                    asset.unavailable_reason = "cargo recovery has no failed shipment"
+                    return
+                contract = world.contracts[shipment.contract_id]
+                destination_id = world.businesses[contract.seller_id].location_id
+                asset.location_id = destination_id
+                quantity = world.quantity_held(asset.id, contract.good_type_id)
+                if quantity + 1e-9 < contract.quantity:
+                    asset.available = False
+                    asset.unavailable_reason = "failed cargo missing during recovery"
+                    return
+                world.transfer_goods(
+                    contract.good_type_id,
+                    contract.quantity,
+                    from_holder=asset.id,
+                    to_holder=contract.seller_id,
+                    to_owner=contract.seller_id,
+                    causes=contract.causal_event_ids[-1:],
+                    reason=f"{contract.id} failed cargo recovered after physical return",
+                )
+                asset.cargo_clearance_pending = False
+                asset.return_route_ids = ()
+                asset.return_route_index = 0
+                asset.return_elapsed_hours = 0.0
+                release_asset(world, asset.id, start_reposition=False)
+                world.record(
+                    "failed_cargo_recovered",
+                    f"{contract.id} cargo recovered after physical return",
+                    entities=[contract.id, shipment.id, asset.id],
+                )
+                return
+            asset.location_id = destination_id
             asset.return_route_ids = ()
             asset.return_route_index = 0
             asset.return_elapsed_hours = 0.0
@@ -848,10 +962,14 @@ def _settle_arrival(world: World, shipment: Shipment) -> None:
     if world.quantity_held(asset.id, contract.good_type_id) + 1e-9 < contract.quantity:
         _fail(world, shipment, "carrier cargo unavailable at unloading")
         return
-    storage_holder = destination.storage_access_id if (
-        destination.storage_access_id == buyer.id or buyer.kind in {"market", "warehouse"}
-    ) else None
-    delivery_holder = storage_holder or (buyer.location_id if buyer.kind in {"market", "shop"} else buyer.id)
+    # A market's place is the canonical public stock holder.  Delivering to
+    # its cashier business would reduce demand while making the goods
+    # invisible to market purchases.
+    if buyer.kind == "market":
+        delivery_holder = destination.place_id
+    else:
+        storage_holder = destination.storage_access_id if destination.storage_access_id == buyer.id else None
+        delivery_holder = storage_holder or (buyer.location_id if buyer.kind == "shop" else buyer.id)
     if destination.storage_capacity is not None:
         stored = sum(lot.quantity for lot in world.lots_held_by(delivery_holder))
         if stored + contract.quantity > destination.storage_capacity + 1e-9:
@@ -931,7 +1049,7 @@ def _settle_arrival(world: World, shipment: Shipment) -> None:
 def _advance_freight_step(world: World, hours: float) -> list[str]:
     """Advance one shared handling/movement interval without changing time."""
     for asset in list(world.transport_assets.values()):
-        if asset.assignment_kind == "reposition":
+        if asset.assignment_kind in {"reposition", "cargo_recovery"}:
             _advance_asset_reposition(world, asset, hours)
     _admit_arrivals(world)
     _admit_loads(world)
@@ -1111,11 +1229,14 @@ def resolve_failed_cargo(world: World, shipment_id: str) -> bool:
     contract = world.contracts[shipment.contract_id]
     asset = world.transport_assets[shipment.carrier_id]
     seller = world.businesses[contract.seller_id]
-    if asset.location_id != seller.location_id:
-        raise ValueError("carrier must be physically co-located with seller")
     quantity = world.quantity_held(asset.id, contract.good_type_id)
     if quantity + 1e-9 < contract.quantity:
         raise ValueError("failed cargo is not present on carrier")
+    if asset.assignment_kind == "cargo_recovery":
+        return False
+    mid_route = shipment.current_route_index < len(shipment.route_ids) and shipment.elapsed_hours > 1e-9
+    if asset.location_id != seller.location_id or mid_route:
+        return _begin_cargo_recovery(world, shipment, asset, seller.location_id)
     world.transfer_goods(
         contract.good_type_id,
         contract.quantity,

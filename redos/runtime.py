@@ -13,12 +13,13 @@ from datetime import datetime, timedelta
 from typing import Iterable
 
 from .enterprise import advance_shipments, compete, create_contract, dispatch_contract
+from .bank import accrue_deposit_interest, accrue_loan_interest
 from .employment import charge_household_expense, pay_wages
 from .living import Recipe, meet, produce, propagate_information, recollect, revise_belief, tell, witness_event
 from .market import buy, refresh_market
 from .model import Actor, World
 from .simulation import _start_next_leg, route_path, tick
-from .transport import dispatch_freight
+from .transport import advance_services, dispatch_freight
 
 
 @dataclass(frozen=True)
@@ -347,6 +348,19 @@ def advance_world(world: World, hours: int = 1, *, external_events: Iterable[Doc
             _settle_day(world)
         tick(world, 1)
         advance_shipments(world, 1)
+        # Ordered carrier services are part of the normal world clock.  Tests
+        # may advance them directly, but a registered service must also run
+        # autonomously during ordinary simulation.
+        advance_services(world, 1)
+        # Financial obligations are ordinary world-clock participants.  The
+        # kernels remain callable for focused operations, while live accounts
+        # and loans accrue without a scenario script having to remember them.
+        for account in world.bank_accounts.values():
+            if account.status == "open":
+                accrue_deposit_interest(world, account.id)
+        for loan in world.bank_loans.values():
+            if loan.status == "open":
+                accrue_loan_interest(world, loan.id)
         adjudicate_hour(world, external_events=incidents)
 
 

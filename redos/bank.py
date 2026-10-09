@@ -9,6 +9,7 @@ borrower's existing debt aggregate.
 from __future__ import annotations
 
 from datetime import timedelta
+import math
 
 from .model import BankAccount, BankLoan, Business, Household, World
 
@@ -43,6 +44,11 @@ def _reduce_debt(holder, amount: float) -> None:
     holder.debt = max(0.0, holder.debt - amount)
 
 
+def _finite(value: float, label: str) -> None:
+    if not math.isfinite(value):
+        raise ValueError(f"{label} must be finite")
+
+
 def open_account(
     world: World,
     bank_id: str,
@@ -58,6 +64,8 @@ def open_account(
     _money_holder(world, customer_id)
     if account_type not in {"demand", "time"}:
         raise ValueError("account type must be demand or time")
+    for value, label in ((annual_interest_rate, "annual interest rate"), (minimum_balance, "minimum balance"), (service_charge, "service charge")):
+        _finite(value, label)
     if annual_interest_rate < 0 or minimum_balance < 0 or service_charge < 0:
         raise ValueError("bank account terms cannot be negative")
     account_id = account_id or f"bank-account-{len(world.bank_accounts) + 1}"
@@ -86,11 +94,15 @@ def open_account(
 
 
 def deposit(world: World, account_id: str, amount: float) -> None:
+    _finite(amount, "deposit")
     if amount <= 0:
         raise ValueError("deposit must be positive")
     account = world.bank_accounts[account_id]
     if account.status != "open":
         raise ValueError("account is not open")
+    # Close the old balance's interest period before adding new principal;
+    # otherwise a deposit made later would earn interest retroactively.
+    accrue_deposit_interest(world, account_id)
     world.pay(account.customer_id, account.bank_id, amount, reason=f"deposit into {account.id}")
     account.balance += amount
     world.record(
@@ -103,6 +115,7 @@ def deposit(world: World, account_id: str, amount: float) -> None:
 
 
 def withdraw(world: World, account_id: str, amount: float) -> None:
+    _finite(amount, "withdrawal")
     if amount <= 0:
         raise ValueError("withdrawal must be positive")
     account = world.bank_accounts[account_id]
@@ -156,6 +169,8 @@ def originate_loan(
 ) -> BankLoan:
     bank = _bank(world, bank_id)
     borrower = _debt_holder(world, borrower_id)
+    _finite(principal, "loan principal")
+    _finite(annual_interest_rate, "loan interest rate")
     if principal <= 0 or annual_interest_rate < 0 or (term_days is not None and term_days <= 0):
         raise ValueError("invalid loan terms")
     if bank.cash + 1e-9 < principal:
@@ -214,13 +229,26 @@ def accrue_loan_interest(world: World, loan_id: str) -> float:
 
 
 def repay_loan(world: World, loan_id: str, amount: float) -> float:
+    _finite(amount, "repayment")
     if amount <= 0:
         raise ValueError("repayment must be positive")
     loan = world.bank_loans[loan_id]
     if loan.status != "open":
         raise ValueError("loan is not open")
-    due = loan.accrued_interest + loan.outstanding_principal
+    # Preflight the elapsed interest and the resulting payment before
+    # mutating the loan.  The final repayment must include interest earned
+    # since the last explicit accrual call.
+    last = loan.last_accrued_at or loan.issued_at
+    elapsed_days = max(0.0, (world.now - last).total_seconds() / 86400.0)
+    projected_interest = loan.outstanding_principal * loan.annual_interest_rate * elapsed_days / 365.0
+    due = loan.accrued_interest + projected_interest + loan.outstanding_principal
     payment_amount = min(amount, due)
+    borrower = _debt_holder(world, loan.borrower_id)
+    if getattr(borrower, "money", getattr(borrower, "cash", 0.0)) + 1e-9 < payment_amount:
+        raise ValueError(f"{loan.borrower_id} cannot pay {payment_amount}")
+    if projected_interest > 0:
+        loan.accrued_interest += projected_interest
+    loan.last_accrued_at = world.now
     payment = world.pay(loan.borrower_id, loan.bank_id, payment_amount, reason=f"loan repayment {loan.id}")
     interest_paid = min(payment_amount, loan.accrued_interest)
     principal_paid = payment_amount - interest_paid
@@ -245,17 +273,22 @@ def repay_loan(world: World, loan_id: str, amount: float) -> float:
 def charge_account_fee(world: World, account_id: str, amount: float | None = None) -> float:
     account = world.bank_accounts[account_id]
     fee = account.service_charge if amount is None else amount
+    _finite(fee, "service charge")
     if fee <= 0:
         raise ValueError("service charge must be positive")
+    accrue_deposit_interest(world, account_id)
     if account.balance - fee < account.minimum_balance - 1e-9:
-        raise ValueError("service charge would breach minimum balance")
-    withdraw(world, account_id, fee)
+        raise ValueError("service charge would breach minimum balance after interest accrual")
+    # A deposit-account fee reduces the bank's deposit liability.  Calling
+    # withdraw here would incorrectly send the fee from the bank back to the
+    # customer and reverse the intended income.
+    account.balance -= fee
     world.record(
         "bank_service_charge",
         f"service charge assessed on {account.id}",
         actors=[account.bank_id, account.customer_id],
         entities=[account.id],
-        data={"amount": fee},
+        data={"amount": fee, "balance": account.balance},
     )
     return fee
 

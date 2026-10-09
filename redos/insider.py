@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from .living import tell
 from .model import Business, Security, SecurityHolding, Statement, TradeOrder, World
 
@@ -34,7 +36,7 @@ def issue_security(
         raise KeyError(issuer_id)
     if security_id in world.securities:
         raise ValueError(f"security {security_id} already exists")
-    if shares <= 0 or initial_price <= 0 or not name:
+    if not math.isfinite(shares) or not math.isfinite(initial_price) or shares <= 0 or initial_price <= 0 or not name:
         raise ValueError("invalid security terms")
     security = Security(
         id=security_id,
@@ -73,7 +75,7 @@ def execute_trade(
         raise ValueError("trade requires distinct buyer and seller")
     security = world.securities[security_id]
     trade_price = security.price if price is None else price
-    if quantity <= 0 or trade_price <= 0:
+    if not math.isfinite(quantity) or not math.isfinite(trade_price) or quantity <= 0 or trade_price <= 0:
         raise ValueError("trade quantity and price must be positive")
     seller_holding = _holding(world, seller_id, security_id)
     if seller_holding is None or seller_holding.quantity + 1e-9 < quantity:
