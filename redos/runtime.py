@@ -18,6 +18,7 @@ from .living import Recipe, meet, produce, propagate_information, recollect, rev
 from .market import buy, refresh_market
 from .model import Actor, World
 from .simulation import _start_next_leg, route_path, tick
+from .transport import dispatch_freight
 
 
 @dataclass(frozen=True)
@@ -176,9 +177,56 @@ def _has_open_flow(world: World, seller_id: str, buyer_id: str, good_id: str) ->
     )
 
 
+def _matching_transport_services(world: World, contract) -> list[tuple]:
+    services = tuple(world.runtime.get("transport_services", ()))
+    return [
+        service for service in services
+        if len(service) >= 3
+        and world.transport_facilities.get(service[1]) is not None
+        and world.transport_facilities.get(service[2]) is not None
+        and world.transport_facilities[service[1]].place_id == contract.origin_id
+        and world.transport_facilities[service[2]].place_id == contract.destination_id
+    ]
+
+
+def _dispatch_commercial_contract(world: World, contract_id: str) -> bool:
+    """Let declared carrier services compete for an economic obligation.
+
+    The fixture declares which facilities participate in a recurring service;
+    availability, capacity, route conditions and assignment conflicts remain
+    canonical transport decisions.  If no service is configured for a flow,
+    the existing non-carrier shipment path remains the compatible default.
+    """
+    contract = world.contracts[contract_id]
+    matching = _matching_transport_services(world, contract)
+    if not matching:
+        dispatch_contract(world, contract_id)
+        return True
+    for carrier_id, origin_facility_id, destination_facility_id, *handling in matching:
+        try:
+            dispatch_freight(
+                world,
+                contract_id,
+                carrier_id=carrier_id,
+                origin_facility_id=origin_facility_id,
+                destination_facility_id=destination_facility_id,
+                loading_hours=float(handling[0]) if handling else 1.0,
+                unloading_hours=float(handling[1]) if len(handling) > 1 else 1.0,
+            )
+            return True
+        except (KeyError, ValueError):
+            # A unavailable carrier leaves the contract open/allocated for a
+            # later adjudication rather than creating a teleporting fallback.
+            continue
+    return False
+
+
 def _adjudicate_businesses(world: World) -> None:
     # Input and output flows are data registered by the fixture.  The runtime
     # does not know that one of them is a mill or a bakery.
+    for contract in list(world.contracts.values()):
+        if contract.status == "open" and _matching_transport_services(world, contract):
+            _dispatch_commercial_contract(world, contract.id)
     for seller_id, buyer_id, good_id, quantity, price in world.runtime.get("input_flows", ()):
         if world.quantity_held(buyer_id, good_id) >= quantity or world.quantity_held(seller_id, good_id) < quantity or _has_open_flow(world, seller_id, buyer_id, good_id):
             continue
@@ -189,7 +237,7 @@ def _adjudicate_businesses(world: World) -> None:
             due_days=1,
         )
         if contract.status == "open":
-            dispatch_contract(world, contract.id)
+            _dispatch_commercial_contract(world, contract.id)
     for business_id, recipes in world.recipes.items():
         business = world.businesses[business_id]
         if not any(_record_working_day(world, world.actors[actor_id]) for actor_id in business.employees):
@@ -210,7 +258,7 @@ def _adjudicate_businesses(world: World) -> None:
             origin_id=seller.location_id, destination_id=buyer.location_id, due_days=1,
         )
         if contract.status == "open":
-            dispatch_contract(world, contract.id)
+            _dispatch_commercial_contract(world, contract.id)
 
 
 def _settle_day(world: World) -> None:
