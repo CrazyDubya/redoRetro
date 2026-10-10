@@ -348,10 +348,13 @@ def advance_world(world: World, hours: int = 1, *, external_events: Iterable[Doc
             _settle_day(world)
         tick(world, 1)
         advance_shipments(world, 1)
+        freight_assets = set(world.runtime.pop("_freight_advanced_assets", set()))
         # Ordered carrier services are part of the normal world clock.  Tests
         # may advance them directly, but a registered service must also run
-        # autonomously during ordinary simulation.
-        advance_services(world, 1)
+        # autonomously during ordinary simulation.  A service-backed carrier
+        # gets one shared hour, never one hour in freight plus another hour in
+        # its timetable service during the same world tick.
+        advance_services(world, 1, excluded_asset_ids=freight_assets)
         # Financial obligations are ordinary world-clock participants.  The
         # kernels remain callable for focused operations, while live accounts
         # and loans accrue without a scenario script having to remember them.

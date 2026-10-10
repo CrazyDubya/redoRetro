@@ -67,6 +67,8 @@ class DerbyStallionTests(unittest.TestCase):
         profile.fatigue = 0.8
         profile.injury = 0.2
         world.transport_assets["horse-a"].readiness = 0.2
+        world.transport_assets["horse-a"].available = False
+        world.transport_assets["horse-a"].unavailable_reason = "horse injured"
         care_for_horse(world, "horse-a", "rest", 0.8)
         self.assertEqual(profile.fatigue, 0.0)
         self.assertEqual(profile.injury, 0.0)

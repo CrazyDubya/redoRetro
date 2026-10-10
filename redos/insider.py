@@ -138,6 +138,8 @@ def buy_information(
     """Pay an actor for a statement; belief and truth remain separate state."""
     if buyer_id not in world.actors or informant_id not in world.actors:
         raise ValueError("paid information requires two people")
+    if buyer_id == informant_id:
+        raise ValueError("information buyer and informant must be distinct")
     if cost <= 0:
         raise ValueError("information must cost something")
     payment = world.pay(buyer_id, informant_id, cost, reason=f"information about {proposition}")

@@ -13,8 +13,8 @@ import math
 from .enterprise import create_contract
 from .market import quote
 from .model import Shipment, World
-from .simulation import effective_route_hours, route_path
-from .transport import dispatch_freight
+from .simulation import effective_route_hours, route_is_accessible, route_path
+from .transport import dispatch_freight, service_accepts
 
 
 @dataclass(frozen=True)
@@ -61,6 +61,9 @@ def quote_ocean_trade(
     path = route_path(world, origin_market.place_id, destination_market.place_id, mode=asset.asset_type)
     if not path:
         raise ValueError("carrier has no accessible route between the markets")
+    # Public market stock is physical stock at the origin place.  Booking
+    # later narrows this to the seller's owned portion without requiring a
+    # duplicate lot under both the market and the seller.
     available = world.quantity_held(origin_market.place_id, good_type_id)
     capacity = max(0.0, asset.capacity - sum(lot.quantity for lot in world.lots_held_by(asset.id)))
     requested = min(available, capacity) if quantity is None else quantity
@@ -109,7 +112,8 @@ def select_ocean_trade(
             )
         except (KeyError, ValueError):
             continue
-    return max(quotes, key=lambda candidate: candidate.expected_margin, default=None)
+    profitable = [candidate for candidate in quotes if candidate.expected_margin > 0]
+    return max(profitable, key=lambda candidate: candidate.expected_margin, default=None)
 
 
 def book_ocean_trade(
@@ -130,8 +134,72 @@ def book_ocean_trade(
     destination_place = world.markets[trade.destination_market_id].place_id
     if world.location_of(seller_id) != origin_place or world.location_of(buyer_id) != destination_place:
         raise ValueError("trade parties must be physically present at the quoted ports")
-    if world.quantity_held(seller_id, trade.good_type_id) + 1e-9 < trade.quantity:
-        raise ValueError("seller does not hold the quoted physical cargo")
+    origin_facility = world.transport_facilities.get(origin_facility_id)
+    destination_facility = world.transport_facilities.get(destination_facility_id)
+    if origin_facility is None or destination_facility is None:
+        world.record(
+            "booking_rejected",
+            f"ocean booking rejected because its facilities do not exist",
+            actors=[seller_id, buyer_id],
+            entities=[trade.carrier_id, origin_facility_id, destination_facility_id],
+            data={"reason": "unknown transport facility"},
+        )
+        raise KeyError(origin_facility_id if origin_facility is None else destination_facility_id)
+    if origin_facility.place_id != origin_place or destination_facility.place_id != destination_place:
+        raise ValueError("trade facilities do not serve the quoted markets")
+    asset = world.transport_assets[trade.carrier_id]
+    if not asset.available or asset.assigned_shipment_id is not None or asset.reserved_for_shipment_id is not None:
+        raise ValueError("quoted carrier is no longer available")
+    if len(asset.crew_ids) < asset.minimum_crew:
+        raise ValueError("quoted carrier lacks its required crew")
+    if asset.location_id != origin_place:
+        raise ValueError("quoted carrier is no longer at the origin")
+    service = world.transport_services.get(service_id or "") if service_id else None
+    if service_id and service is None:
+        raise KeyError(service_id)
+    if service is not None:
+        if service.asset_id != asset.id or service.status not in {"ready", "waiting_asset"}:
+            raise ValueError("service is not ready for this carrier")
+        if service.stop_place_ids[service.current_stop_index] != origin_place:
+            raise ValueError("trade origin is not the service's current stop")
+        next_stop = service.stop_place_ids[(service.current_stop_index + 1) % len(service.stop_place_ids)]
+        if next_stop != destination_place:
+            raise ValueError("trade destination is not the service's next stop")
+        if not service_accepts(service, trade.good_type_id):
+            raise ValueError("transport service does not accept this cargo")
+    if world.quantity_owned_at(seller_id, origin_place, trade.good_type_id) + 1e-9 < trade.quantity:
+        raise ValueError("seller does not own the quoted physical cargo at the origin")
+    if not asset.available or asset.assigned_shipment_id is not None or asset.reserved_for_shipment_id is not None:
+        raise ValueError("quoted carrier is no longer available")
+    if asset.cargo_clearance_pending or sum(lot.quantity for lot in world.lots_held_by(asset.id)) > 1e-9:
+        raise ValueError("quoted carrier still holds unresolved cargo")
+    if asset.condition <= 0 or asset.readiness <= 0 or len(asset.crew_ids) < asset.minimum_crew:
+        raise ValueError("quoted carrier is not ready for dispatch")
+    if not all(route_is_accessible(world, route, mode=asset.asset_type) for route in route_path(world, origin_place, destination_place, mode=asset.asset_type)):
+        raise ValueError("quoted route is not currently accessible")
+    if not math.isfinite(loading_hours) or not math.isfinite(unloading_hours) or loading_hours <= 0 or unloading_hours <= 0:
+        raise ValueError("handling times must be positive and finite")
+    if sum(lot.quantity for lot in world.lots_held_by(asset.id)) + trade.quantity > asset.capacity + 1e-9:
+        raise ValueError("quoted carrier capacity exceeded")
+    reserved = sum(
+        contract.quantity
+        for contract in world.contracts.values()
+        if contract.seller_id == seller_id
+        and contract.good_type_id == trade.good_type_id
+        and contract.status in {"allocated", "in_transit"}
+    )
+    available_at_origin = world.quantity_owned_at(seller_id, origin_place, trade.good_type_id)
+    if available_at_origin - reserved + 1e-9 < trade.quantity:
+        world.record(
+            "booking_rejected",
+            "ocean booking rejected because origin stock is already reserved",
+            actors=[seller_id, buyer_id],
+            entities=[trade.carrier_id, origin_facility_id, destination_facility_id],
+            data={"reason": "origin stock reserved", "quantity": trade.quantity, "reserved": reserved},
+        )
+        raise ValueError("seller's origin stock is already reserved")
+    event_checkpoint = len(world.events)
+    event_number_checkpoint = world._event_number
     contract = create_contract(
         world,
         seller_id,
@@ -155,19 +223,20 @@ def book_ocean_trade(
             service_id=service_id,
         )
     except Exception as exc:
-        # A booking that cannot be physically dispatched is a failed
-        # commercial obligation, not an orphan open contract.
-        contract.status = "failed"
-        contract.failure_reason = f"ocean booking rejected: {exc}"
-        failed = world.record(
-            "contract_failed",
-            f"{contract.id} ocean booking failed",
+        # The booking did not form a live obligation.  Dispatch preflight is
+        # deliberately before allocation, so this path removes the tentative
+        # contract and its tentative causal events, recording a rejected
+        # attempt rather than leaving a false signed/failed obligation behind.
+        world.contracts.pop(contract.id, None)
+        world.events[:] = world.events[:event_checkpoint]
+        world._event_number = event_number_checkpoint
+        world.record(
+            "booking_rejected",
+            f"ocean booking rejected before dispatch",
             actors=[seller_id, buyer_id],
-            entities=[contract.id],
-            causes=contract.causal_event_ids[-1:],
-            data={"reason": contract.failure_reason},
+            entities=[trade.carrier_id, origin_facility_id, destination_facility_id],
+            data={"reason": str(exc)},
         )
-        contract.causal_event_ids.append(failed.id)
         raise
     world.record(
         "ocean_trade_booked",

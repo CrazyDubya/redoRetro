@@ -27,7 +27,13 @@ class InsuranceGameTests(unittest.TestCase):
             policy_id="policy-1",
         )
         self.assertEqual(customer.cash, 175.0)
-        loss = world.record("warehouse_fire", "warehouse stock damaged", actors=[customer.id], entities=["warehouse"])
+        loss = world.record(
+            "warehouse_fire",
+            "warehouse stock damaged",
+            actors=[customer.id],
+            entities=["warehouse"],
+            data={"loss_kind": "flood", "covered_risk": "property", "verified_loss_amount": 140.0},
+        )
         claim = file_claim(world, policy.id, loss_event_id=loss.id, loss_amount=140.0, claim_id="claim-1")
         self.assertEqual(claim.indemnity, 100.0)
         self.assertEqual(approve_claim(world, claim.id), 100.0)
@@ -43,7 +49,7 @@ class InsuranceGameTests(unittest.TestCase):
             insurer.id,
             customer.id,
             line="cargo",
-            region_id="dock",
+            region_id="warehouse",
             premium=10.0,
             coverage_limit=80.0,
             policy_id="policy-2",
@@ -51,7 +57,13 @@ class InsuranceGameTests(unittest.TestCase):
         unrelated = world.record("dock_fire", "a different merchant's cargo burned", actors=["merchant"])
         with self.assertRaises(ValueError):
             file_claim(world, policy.id, loss_event_id=unrelated.id, loss_amount=20.0)
-        loss = world.record("warehouse_fire", "customer cargo damaged", actors=[customer.id])
+        loss = world.record(
+            "warehouse_fire",
+            "customer cargo damaged",
+            actors=[customer.id],
+            entities=["warehouse"],
+            data={"loss_kind": "theft", "covered_risk": "cargo", "verified_loss_amount": 60.0},
+        )
         claim = file_claim(world, policy.id, loss_event_id=loss.id, loss_amount=60.0, claim_id="claim-2")
         approve_claim(world, claim.id)
         insurer.cash = 0.0

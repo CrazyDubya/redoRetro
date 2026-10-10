@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from .model import Business, Contract, Shipment, World
+from .model import Business, Contract, Shipment, World, require_finite
 from .simulation import route_path
 
 
@@ -55,6 +55,11 @@ def create_contract(
     destination_id: str,
     due_days: int,
 ) -> Contract:
+    require_finite(quantity, "contract quantity")
+    require_finite(unit_price, "contract unit price")
+    require_finite(due_days, "contract due days")
+    if seller_id == buyer_id:
+        raise ValueError("contract parties must be distinct")
     if quantity <= 0 or unit_price <= 0 or due_days < 0:
         raise ValueError("invalid contract terms")
     world._event_number += 1
@@ -78,7 +83,7 @@ def create_contract(
     return contract
 
 
-def allocate_contract(world: World, contract_id: str) -> Contract:
+def allocate_contract(world: World, contract_id: str, *, source_place_id: str | None = None) -> Contract:
     contract = world.contracts[contract_id]
     if contract.status != "open":
         raise ValueError("contract is not open")
@@ -90,7 +95,10 @@ def allocate_contract(world: World, contract_id: str) -> Contract:
         and other.good_type_id == contract.good_type_id
         and other.status in {"allocated", "in_transit"}
     )
-    if world.quantity_held(seller.id, contract.good_type_id) - reserved + 1e-9 < contract.quantity:
+    available = world.quantity_held(seller.id, contract.good_type_id)
+    if source_place_id is not None:
+        available = max(available, world.quantity_owned_at(seller.id, source_place_id, contract.good_type_id))
+    if available - reserved + 1e-9 < contract.quantity:
         contract.status = "failed"
         contract.failure_reason = "goods unavailable at allocation"
         failed = world.record("contract_failed", f"{contract.id} could not allocate goods", actors=[seller.id], entities=[contract.id], data={"reason": contract.failure_reason})
@@ -108,7 +116,7 @@ def dispatch_contract(world: World, contract_id: str) -> Contract:
     if contract.shipment_id is not None or contract.status not in {"open", "allocated"}:
         raise ValueError(f"contract {contract_id} is already dispatched or not dispatchable")
     if contract.status == "open":
-        allocate_contract(world, contract_id)
+        allocate_contract(world, contract_id, source_place_id=contract.origin_id)
     if contract.status != "allocated":
         raise ValueError(f"contract {contract_id} is not allocated")
     path = route_path(world, contract.origin_id, contract.destination_id)
@@ -121,6 +129,17 @@ def dispatch_contract(world: World, contract_id: str) -> Contract:
         destination_id=contract.destination_id,
         route_ids=tuple(route.id for route in path),
     )
+    held_by_seller = world.quantity_held(contract.seller_id, contract.good_type_id)
+    if held_by_seller + 1e-9 < contract.quantity:
+        world.transfer_owned_goods_at(
+            contract.seller_id,
+            contract.origin_id,
+            contract.good_type_id,
+            contract.quantity - held_by_seller,
+            to_holder=contract.seller_id,
+            causes=contract.causal_event_ids[-1:],
+            reason=f"{contract.id} origin custody made available for dispatch",
+        )
     world.add(shipment)
     world.transfer_goods(
         contract.good_type_id,
@@ -150,11 +169,11 @@ def advance_shipments(world: World, hours: float = 1.0) -> list[str]:
     delivered: list[str] = []
     if (
         any(shipment.carrier_id is not None and shipment.status not in {"delivered", "failed"} for shipment in world.shipments.values())
-        or any(asset.assignment_kind == "reposition" for asset in world.transport_assets.values())
+        or any(asset.assignment_kind in {"reposition", "cargo_recovery"} for asset in world.transport_assets.values())
     ):
         from .transport import advance_freight
 
-        delivered.extend(advance_freight(world, hours))
+        delivered.extend(advance_freight(world, hours, preserve_runtime_exclusions=True))
     for shipment in list(world.shipments.values()):
         if shipment.carrier_id is not None:
             continue
@@ -251,6 +270,12 @@ def advance_shipments(world: World, hours: float = 1.0) -> list[str]:
         except (KeyError, ValueError):
             world.pay(seller.id, buyer.id, total, reason=f"reverse failed {contract.id} settlement")
             raise
+        if buyer.kind == "market":
+            from .market import accept_market_delivery
+
+            market_id = next((market.id for market in world.markets.values() if market.place_id == buyer.location_id), None)
+            if market_id is not None:
+                accept_market_delivery(world, market_id, contract.good_type_id, contract.quantity, causes=contract.causal_event_ids[-1:])
         shipment.status = "delivered"
         contract.status = "delivered"
         contract.delivered_at = world.now

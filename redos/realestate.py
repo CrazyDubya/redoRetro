@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-from .model import Property, World
+from datetime import timedelta
+
+from .model import Property, World, require_finite
 
 
 def add_property(world: World, property: Property) -> Property:
     if property.place_id not in world.places:
         raise KeyError(property.place_id)
+    require_finite(property.market_value, "property market value")
+    require_finite(property.monthly_rent, "property monthly rent")
     if property.market_value <= 0 or property.monthly_rent < 0:
         raise ValueError("property value must be positive and rent non-negative")
     if property.owner_id not in world.actors and property.owner_id not in world.businesses and property.owner_id not in world.households:
@@ -20,11 +24,14 @@ def add_property(world: World, property: Property) -> Property:
 
 
 def update_property_market(world: World, property_id: str, factor: float, *, reason: str) -> float:
+    require_finite(factor, "property market factor")
     if factor <= 0:
         raise ValueError("property market factor must be positive")
     property = world.properties[property_id]
     before = property.market_value
-    property.market_value *= factor
+    projected = before * factor
+    require_finite(projected, "property market value")
+    property.market_value = projected
     property.value_history.append((world.now, property.market_value))
     world.record(
         "property_market_update",
@@ -40,6 +47,7 @@ def buy_property(world: World, property_id: str, buyer_id: str, seller_id: str, 
     if property.owner_id != seller_id:
         raise ValueError("seller does not own property")
     amount = property.market_value if price is None else price
+    require_finite(amount, "property price")
     if amount <= 0:
         raise ValueError("property price must be positive")
     payment = world.pay(buyer_id, seller_id, amount, reason=f"{property.id} purchase")
@@ -62,6 +70,7 @@ def lease_property(world: World, property_id: str, tenant_id: str) -> None:
     if tenant_id == property.owner_id:
         raise ValueError("owner cannot lease property to itself")
     property.occupied_by_id = tenant_id
+    property.last_rent_at = None
     world.record("property_leased", f"{property.id} leased to {tenant_id}", actors=[tenant_id, property.owner_id], entities=[property.id])
 
 
@@ -71,6 +80,8 @@ def collect_rent(world: World, property_id: str) -> float:
         raise ValueError("property is not occupied")
     if property.monthly_rent <= 0:
         return 0.0
+    if property.last_rent_at is not None and world.now < property.last_rent_at + timedelta(days=30):
+        raise ValueError("rent is not due for this rental period")
     payment = world.pay(
         property.occupied_by_id,
         property.owner_id,
@@ -85,5 +96,5 @@ def collect_rent(world: World, property_id: str) -> float:
         causes=(payment.id,),
         data={"amount": property.monthly_rent},
     )
+    property.last_rent_at = world.now
     return property.monthly_rent
-
