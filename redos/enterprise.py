@@ -129,6 +129,17 @@ def dispatch_contract(world: World, contract_id: str) -> Contract:
         destination_id=contract.destination_id,
         route_ids=tuple(route.id for route in path),
     )
+    held_by_seller = world.quantity_held(contract.seller_id, contract.good_type_id)
+    if held_by_seller + 1e-9 < contract.quantity:
+        world.transfer_owned_goods_at(
+            contract.seller_id,
+            contract.origin_id,
+            contract.good_type_id,
+            contract.quantity - held_by_seller,
+            to_holder=contract.seller_id,
+            causes=contract.causal_event_ids[-1:],
+            reason=f"{contract.id} origin custody made available for dispatch",
+        )
     world.add(shipment)
     world.transfer_goods(
         contract.good_type_id,
@@ -162,7 +173,7 @@ def advance_shipments(world: World, hours: float = 1.0) -> list[str]:
     ):
         from .transport import advance_freight
 
-        delivered.extend(advance_freight(world, hours))
+        delivered.extend(advance_freight(world, hours, preserve_runtime_exclusions=True))
     for shipment in list(world.shipments.values()):
         if shipment.carrier_id is not None:
             continue

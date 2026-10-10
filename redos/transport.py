@@ -210,6 +210,7 @@ def _advance_service(world: World, service: TransportService, hours: float) -> N
             continue
         route = world.routes[service.route_ids[service.route_index]]
         if not route_is_accessible(world, route, mode=asset.asset_type):
+            service.journey_elapsed_hours += remaining
             service.status = "blocked"
             world.record("transport_service_delayed", f"{service.id} waits on {route.id}", entities=[service.id, asset.id, route.id])
             return
@@ -1321,15 +1322,18 @@ def resolve_failed_cargo(world: World, shipment_id: str) -> bool:
     return True
 
 
-def advance_freight(world: World, hours: float = 1.0) -> list[str]:
+def advance_freight(world: World, hours: float = 1.0, *, preserve_runtime_exclusions: bool = False) -> list[str]:
     """Advance freight on a shared facility timeline without changing time."""
     require_finite(hours, "freight time")
     if hours < 0:
         raise ValueError("freight time cannot move backwards")
+    world.runtime.pop("_freight_advanced_assets", None)
     settled: list[str] = []
     remaining = float(hours)
     while remaining > 1e-9:
         step = min(1.0, remaining)
         settled.extend(_advance_freight_step(world, step))
         remaining -= step
+    if not preserve_runtime_exclusions:
+        world.runtime.pop("_freight_advanced_assets", None)
     return settled

@@ -1,4 +1,5 @@
 import unittest
+import math
 
 from redos.bootstrap import build_tiny_world
 from redos.model import Household, Property
@@ -53,6 +54,16 @@ class BaronTests(unittest.TestCase):
         world.advance(days=30)
         self.assertEqual(collect_rent(world, property.id), 10.0)
         self.assertEqual(buyer.cash, before_buyer - property.market_value + 10.0)
+
+    def test_property_market_update_rejects_overflow_without_mutating_state(self):
+        world, property, _owner, _buyer = self._world()
+        property.market_value = 1e308
+        before_history = list(property.value_history)
+        with self.assertRaises(ValueError):
+            update_property_market(world, property.id, 2.0, reason="overflow")
+        self.assertTrue(math.isfinite(property.market_value))
+        self.assertEqual(property.market_value, 1e308)
+        self.assertEqual(property.value_history, before_history)
 
 
 if __name__ == "__main__":

@@ -1112,7 +1112,7 @@ class World:
         require_finite(amount, "payment")
         if amount < 0:
             raise ValueError("payment cannot be negative")
-        if payer_id == payee_id and amount > 1e-9:
+        if payer_id == payee_id and amount > 0:
             raise ValueError("payment parties must be distinct")
         payer = self.actors.get(payer_id) or self.businesses.get(payer_id) or self.households.get(payer_id)
         payee = self.actors.get(payee_id) or self.businesses.get(payee_id) or self.households.get(payee_id)

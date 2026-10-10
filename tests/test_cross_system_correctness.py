@@ -4,7 +4,7 @@ import unittest
 from redos.audit import validate_world
 from redos.bank import charge_account_fee, deposit, open_account, originate_loan, repay_loan
 from redos.bootstrap import build_tiny_world
-from redos.enterprise import create_contract
+from redos.enterprise import create_contract, dispatch_contract
 from redos.insider import execute_trade, issue_security
 from redos.insurance import approve_claim, file_claim, insurer_exposure, issue_policy
 from redos.model import Business, TransportAsset, TransportFacility, TransportService
@@ -28,6 +28,8 @@ class CrossSystemCorrectnessTests(unittest.TestCase):
         before = holder.cash
         with self.assertRaises(ValueError):
             world.pay(holder.id, holder.id, 10.0)
+        with self.assertRaises(ValueError):
+            world.pay(holder.id, holder.id, 1e-12)
         self.assertEqual(holder.cash, before)
 
     def test_non_finite_canonical_inputs_are_rejected_before_mutation(self):
@@ -133,6 +135,33 @@ class CrossSystemCorrectnessTests(unittest.TestCase):
         advance_world(world, 1)
         self.assertEqual(shipment.status, "in_transit")
         self.assertEqual(world.transport_services["shared-service"].current_stop_index, 0)
+
+    def test_standalone_freight_does_not_suppress_the_next_service_tick(self):
+        world = build_tiny_world(seed=2042)
+        seller = world.businesses["shop-market-cashier"]
+        buyer = world.businesses["north-market-cashier"]
+        seller.cash = buyer.cash = 500_000.0
+        world.create_lot("metals", 1.0, holder_id=seller.id, owner_id=seller.id, provenance=("service-clock",))
+        add_asset(world, TransportAsset("service-cart", "Service Cart", "cart", "shop", seller.id, capacity=1, fuel=100.0, fuel_capacity=100.0, fuel_burn_per_hour=0.1))
+        add_service(world, TransportService("service-clock", "service-cart", ("shop", "tavern"), timetable_hours=(24.0,)))
+        add_facility(world, TransportFacility("service-origin", "shop", 1))
+        add_facility(world, TransportFacility("service-destination", "tavern", 1))
+        contract = create_contract(world, seller.id, buyer.id, "metals", 1.0, 20.0, origin_id="shop", destination_id="tavern", due_days=2)
+        dispatch_freight(world, contract.id, carrier_id="service-cart", origin_facility_id="service-origin", destination_facility_id="service-destination", service_id="service-clock")
+        advance_freight(world, 50)
+        advance_world(world, 1)
+        self.assertGreater(world.transport_services["service-clock"].journey_elapsed_hours, 0.0)
+
+    def test_legacy_dispatch_moves_origin_owned_market_custody_before_shipment(self):
+        world = build_tiny_world(seed=2043)
+        seller = world.businesses["shop-market-cashier"]
+        buyer = world.businesses["north-market-cashier"]
+        seller.cash = buyer.cash = 500_000.0
+        world.create_lot("metals", 1.0, holder_id="shop", owner_id=seller.id, provenance=("legacy-origin-custody",))
+        contract = create_contract(world, seller.id, buyer.id, "metals", 1.0, 20.0, origin_id="shop", destination_id="north", due_days=2)
+        dispatch_contract(world, contract.id)
+        self.assertIsNotNone(contract.shipment_id)
+        self.assertEqual(world.quantity_held(contract.shipment_id, "metals"), 1.0)
 
     def test_cargo_recovery_advances_through_normal_world_clock(self):
         world, seller, shipment = self._failed_freight_world()

@@ -29,8 +29,9 @@ def update_property_market(world: World, property_id: str, factor: float, *, rea
         raise ValueError("property market factor must be positive")
     property = world.properties[property_id]
     before = property.market_value
-    property.market_value *= factor
-    require_finite(property.market_value, "property market value")
+    projected = before * factor
+    require_finite(projected, "property market value")
+    property.market_value = projected
     property.value_history.append((world.now, property.market_value))
     world.record(
         "property_market_update",
