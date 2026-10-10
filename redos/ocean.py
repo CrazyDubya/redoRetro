@@ -181,6 +181,25 @@ def book_ocean_trade(
         raise ValueError("handling times must be positive and finite")
     if sum(lot.quantity for lot in world.lots_held_by(asset.id)) + trade.quantity > asset.capacity + 1e-9:
         raise ValueError("quoted carrier capacity exceeded")
+    reserved = sum(
+        contract.quantity
+        for contract in world.contracts.values()
+        if contract.seller_id == seller_id
+        and contract.good_type_id == trade.good_type_id
+        and contract.status in {"allocated", "in_transit"}
+    )
+    available_at_origin = world.quantity_owned_at(seller_id, origin_place, trade.good_type_id)
+    if available_at_origin - reserved + 1e-9 < trade.quantity:
+        world.record(
+            "booking_rejected",
+            "ocean booking rejected because origin stock is already reserved",
+            actors=[seller_id, buyer_id],
+            entities=[trade.carrier_id, origin_facility_id, destination_facility_id],
+            data={"reason": "origin stock reserved", "quantity": trade.quantity, "reserved": reserved},
+        )
+        raise ValueError("seller's origin stock is already reserved")
+    event_checkpoint = len(world.events)
+    event_number_checkpoint = world._event_number
     contract = create_contract(
         world,
         seller_id,
@@ -206,8 +225,11 @@ def book_ocean_trade(
     except Exception as exc:
         # The booking did not form a live obligation.  Dispatch preflight is
         # deliberately before allocation, so this path removes the tentative
-        # contract and records a rejected attempt rather than a false failure.
+        # contract and its tentative causal events, recording a rejected
+        # attempt rather than leaving a false signed/failed obligation behind.
         world.contracts.pop(contract.id, None)
+        world.events[:] = world.events[:event_checkpoint]
+        world._event_number = event_number_checkpoint
         world.record(
             "booking_rejected",
             f"ocean booking rejected before dispatch",
