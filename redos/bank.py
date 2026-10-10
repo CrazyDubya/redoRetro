@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import timedelta
 import math
 
-from .model import BankAccount, BankLoan, Business, Household, World
+from .model import BankAccount, BankLoan, Business, Household, World, require_finite
 
 
 def _money_holder(world: World, holder_id: str):
@@ -45,8 +45,18 @@ def _reduce_debt(holder, amount: float) -> None:
 
 
 def _finite(value: float, label: str) -> None:
-    if not math.isfinite(value):
-        raise ValueError(f"{label} must be finite")
+    require_finite(value, label)
+
+
+def _projected_deposit_interest(world: World, account: BankAccount) -> tuple[float, float]:
+    """Return elapsed interest and resulting balance without mutating the account."""
+    _finite(account.balance, f"{account.id} balance")
+    last = account.last_accrued_at or account.opened_at or world.now
+    elapsed_days = max(0.0, (world.now - last).total_seconds() / 86400.0)
+    interest = account.balance * account.annual_interest_rate * elapsed_days / 365.0
+    _finite(interest, f"{account.id} interest")
+    _finite(account.balance + interest, f"{account.id} balance")
+    return interest, account.balance + interest
 
 
 def open_account(
@@ -100,6 +110,18 @@ def deposit(world: World, account_id: str, amount: float) -> None:
     account = world.bank_accounts[account_id]
     if account.status != "open":
         raise ValueError("account is not open")
+    customer = _money_holder(world, account.customer_id)
+    if account.customer_id == account.bank_id:
+        raise ValueError("account customer and bank must be distinct")
+    customer_field = "money" if hasattr(customer, "money") else "cash"
+    customer_balance = getattr(customer, customer_field)
+    if not math.isfinite(customer_balance) or customer_balance + 1e-9 < amount:
+        raise ValueError(f"{account.customer_id} cannot fund deposit")
+    bank = _bank(world, account.bank_id)
+    if not math.isfinite(bank.cash):
+        raise ValueError(f"{account.bank_id} has non-finite cash")
+    interest, projected_balance = _projected_deposit_interest(world, account)
+    _finite(projected_balance + amount, f"{account.id} balance")
     # Close the old balance's interest period before adding new principal;
     # otherwise a deposit made later would earn interest retroactively.
     accrue_deposit_interest(world, account_id)
@@ -122,8 +144,18 @@ def withdraw(world: World, account_id: str, amount: float) -> None:
     bank = _bank(world, account.bank_id)
     if account.status != "open":
         raise ValueError("account is not open")
-    if account.balance - amount < account.minimum_balance - 1e-9:
+    if account.customer_id == account.bank_id:
+        raise ValueError("account customer and bank must be distinct")
+    interest, projected_balance = _projected_deposit_interest(world, account)
+    if projected_balance - amount < account.minimum_balance - 1e-9:
         raise ValueError("withdrawal would breach minimum balance")
+    if bank.cash + 1e-9 < amount:
+        raise ValueError("bank cannot fund withdrawal")
+    customer = _money_holder(world, account.customer_id)
+    customer_field = "money" if hasattr(customer, "money") else "cash"
+    if not math.isfinite(getattr(customer, customer_field)):
+        raise ValueError(f"{account.customer_id} has non-finite cash")
+    accrue_deposit_interest(world, account_id)
     # World.pay validates bank liquidity before the account ledger changes.
     world.pay(account.bank_id, account.customer_id, amount, reason=f"withdrawal from {account.id}")
     account.balance -= amount
@@ -143,6 +175,7 @@ def accrue_deposit_interest(world: World, account_id: str) -> float:
     last = account.last_accrued_at or account.opened_at or world.now
     elapsed_days = max(0.0, (world.now - last).total_seconds() / 86400.0)
     interest = account.balance * account.annual_interest_rate * elapsed_days / 365.0
+    _finite(interest, f"{account.id} interest")
     account.last_accrued_at = world.now
     if interest <= 0:
         return 0.0
@@ -214,6 +247,8 @@ def accrue_loan_interest(world: World, loan_id: str) -> float:
     last = loan.last_accrued_at or loan.issued_at
     elapsed_days = max(0.0, (world.now - last).total_seconds() / 86400.0)
     interest = loan.outstanding_principal * loan.annual_interest_rate * elapsed_days / 365.0
+    _finite(interest, f"{loan.id} interest")
+    _finite(loan.accrued_interest + interest, f"{loan.id} accrued interest")
     loan.last_accrued_at = world.now
     if interest <= 0:
         return 0.0
@@ -276,9 +311,10 @@ def charge_account_fee(world: World, account_id: str, amount: float | None = Non
     _finite(fee, "service charge")
     if fee <= 0:
         raise ValueError("service charge must be positive")
-    accrue_deposit_interest(world, account_id)
-    if account.balance - fee < account.minimum_balance - 1e-9:
+    _interest, projected_balance = _projected_deposit_interest(world, account)
+    if projected_balance - fee < account.minimum_balance - 1e-9:
         raise ValueError("service charge would breach minimum balance after interest accrual")
+    accrue_deposit_interest(world, account_id)
     # A deposit-account fee reduces the bank's deposit liability.  Calling
     # withdraw here would incorrectly send the fee from the bank back to the
     # customer and reverse the intended income.

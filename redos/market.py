@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import copy
 from typing import Iterable
 
-from .model import Actor, GoodType, Market, Place, Route, World
+from .model import Actor, GoodType, Market, Place, Route, World, require_finite
 from .simulation import route_path
 
 
@@ -122,6 +122,7 @@ def _market_price(world: World, market: Market, good_type_id: str) -> float:
 
 
 def quote(world: World, market_id: str, good_type_id: str, quantity: float, *, side: str) -> TradeQuote:
+    require_finite(quantity, "market quote quantity")
     if quantity <= 0 or side not in {"buy", "sell"}:
         raise ValueError("quantity must be positive and side must be buy or sell")
     market = world.markets[market_id]
@@ -130,6 +131,9 @@ def quote(world: World, market_id: str, good_type_id: str, quantity: float, *, s
 
 def refresh_market(world: World, market_id: str, *, days: int = 1) -> None:
     market = world.markets[market_id]
+    require_finite(days, "market refresh days")
+    for good_id, rate in (*market.production_rates.items(), *market.demand_rates.items()):
+        require_finite(rate, f"market rate for {good_id}")
     if days < 0:
         raise ValueError("days cannot be negative")
     # Validate all attribution before changing any published market state.
@@ -204,6 +208,7 @@ def refresh_market(world: World, market_id: str, *, days: int = 1) -> None:
 
 def accept_market_delivery(world: World, market_id: str, good_type_id: str, quantity: float, *, causes: Iterable[str] = ()) -> float:
     """Apply a physical delivery to the market's outstanding local demand."""
+    require_finite(quantity, "market delivery quantity")
     if quantity <= 0:
         raise ValueError("market delivery quantity must be positive")
     market = world.markets[market_id]
@@ -233,6 +238,9 @@ def _debit_credit(world: World, buyer_id: str, seller_id: str, amount: float, *,
 
 
 def buy(world: World, buyer_id: str, market_id: str, good_type_id: str, quantity: float, *, offer: float | None = None) -> TradeQuote:
+    require_finite(quantity, "market purchase quantity")
+    if offer is not None:
+        require_finite(offer, "market offer")
     market = world.markets[market_id]
     place_id = market.place_id
     if world.location_of(buyer_id) != place_id:

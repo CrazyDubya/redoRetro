@@ -14,6 +14,13 @@ import math
 from typing import Any, Iterable
 
 
+def require_finite(value: float, label: str) -> float:
+    """Validate a numeric input before it can cross a canonical state boundary."""
+    if not math.isfinite(value):
+        raise ValueError(f"{label} must be finite")
+    return value
+
+
 @dataclass
 class Place:
     id: str
@@ -174,6 +181,7 @@ class Property:
     market_value: float
     monthly_rent: float = 0.0
     occupied_by_id: str | None = None
+    last_rent_at: datetime | None = None
     mortgage_balance: float = 0.0
     value_history: list[tuple[datetime, float]] = field(default_factory=list)
 
@@ -449,6 +457,7 @@ class TransportService:
     route_ids: tuple[str, ...] = ()
     route_index: int = 0
     elapsed_hours: float = 0.0
+    journey_elapsed_hours: float = 0.0
     dwell_remaining_hours: float = 0.0
     status: str = "ready"
     completed_cycles: int = 0
@@ -690,6 +699,78 @@ class World:
     def quantity_held(self, holder_id: str, good_type_id: str) -> float:
         return sum(lot.quantity for lot in self.lots_held_by(holder_id, good_type_id))
 
+    def quantity_owned_at(self, owner_id: str, place_id: str, good_type_id: str) -> float:
+        """Return physical stock owned by ``owner_id`` and present at a place."""
+        if place_id not in self.places:
+            raise KeyError(place_id)
+        total = 0.0
+        for lot in self.lots.values():
+            if lot.good_type_id != good_type_id or lot.owner_id != owner_id or lot.quantity <= 0:
+                continue
+            try:
+                holder_place = self.location_of(lot.holder_id)
+            except KeyError:
+                continue
+            if holder_place == place_id:
+                total += lot.quantity
+        return total
+
+    def transfer_owned_goods_at(
+        self,
+        owner_id: str,
+        place_id: str,
+        good_type_id: str,
+        quantity: float,
+        *,
+        to_holder: str,
+        causes: Iterable[str] = (),
+        reason: str = "owned goods transferred at place",
+    ) -> list[InventoryLot]:
+        """Move only an owner's co-located lots, preserving physical custody."""
+        require_finite(quantity, "owned goods transfer quantity")
+        if quantity <= 0:
+            raise ValueError("owned goods transfer quantity must be positive")
+        if not self._holder_exists(to_holder):
+            raise KeyError(to_holder)
+        candidates = [
+            lot for lot in self.lots.values()
+            if lot.good_type_id == good_type_id
+            and lot.owner_id == owner_id
+            and lot.quantity > 0
+            and lot.holder_id != to_holder
+            and self.location_of(lot.holder_id) == place_id
+        ]
+        if sum(lot.quantity for lot in candidates) + 1e-9 < quantity:
+            raise ValueError(f"{owner_id} does not own enough {good_type_id} at {place_id}")
+        remaining = quantity
+        new_lots: list[InventoryLot] = []
+        for lot in candidates:
+            moved = min(remaining, lot.quantity)
+            lot.quantity -= moved
+            new_lots.append(
+                self.create_lot(
+                    good_type_id,
+                    moved,
+                    holder_id=to_holder,
+                    owner_id=owner_id,
+                    provenance=(*lot.provenance, lot.id),
+                    counts_as_creation=False,
+                )
+            )
+            remaining -= moved
+            if remaining <= 1e-9:
+                break
+        self.record(
+            "goods_transfer",
+            reason,
+            entities=[good_type_id, owner_id, place_id, to_holder, *(lot.id for lot in new_lots)],
+            causes=causes,
+            data={"quantity": quantity, "good_type_id": good_type_id, "owner_id": owner_id, "place_id": place_id},
+        )
+        self._sync_market_balances(place_id)
+        self._sync_market_balances(self.location_of(to_holder))
+        return new_lots
+
     def create_lot(
         self,
         good_type_id: str,
@@ -700,7 +781,8 @@ class World:
         provenance: Iterable[str] = (),
         counts_as_creation: bool = True,
     ) -> InventoryLot:
-        if not math.isfinite(quantity) or quantity <= 0:
+        require_finite(quantity, "lot quantity")
+        if quantity <= 0:
             raise ValueError("lot quantity must be positive")
         if good_type_id not in self.goods:
             raise KeyError(good_type_id)
@@ -750,7 +832,8 @@ class World:
         causes: Iterable[str] = (),
         reason: str = "goods transferred",
     ) -> list[InventoryLot]:
-        if not math.isfinite(quantity) or quantity <= 0:
+        require_finite(quantity, "transfer quantity")
+        if quantity <= 0:
             raise ValueError("transfer quantity must be positive")
         available = self.quantity_held(from_holder, good_type_id)
         if available + 1e-9 < quantity:
@@ -792,6 +875,7 @@ class World:
         causes: Iterable[str] = (),
         reason: str = "goods consumed",
     ) -> list[str]:
+        require_finite(quantity, "consumption quantity")
         if quantity <= 0:
             raise ValueError("consumption quantity must be positive")
         if self.quantity_held(holder_id, good_type_id) + 1e-9 < quantity:
@@ -1025,8 +1109,11 @@ class World:
         return arrived
 
     def pay(self, payer_id: str, payee_id: str, amount: float, *, causes: Iterable[str] = (), reason: str = "payment") -> CausalEvent:
-        if not math.isfinite(amount) or amount < 0:
+        require_finite(amount, "payment")
+        if amount < 0:
             raise ValueError("payment cannot be negative")
+        if payer_id == payee_id and amount > 1e-9:
+            raise ValueError("payment parties must be distinct")
         payer = self.actors.get(payer_id) or self.businesses.get(payer_id) or self.households.get(payer_id)
         payee = self.actors.get(payee_id) or self.businesses.get(payee_id) or self.households.get(payee_id)
         if payer is None or payee is None:

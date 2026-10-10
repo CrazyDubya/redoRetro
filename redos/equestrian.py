@@ -34,6 +34,8 @@ def _require_idle_horse(world: World, horse_id: str):
         raise ValueError(f"{horse_id} is not a horse")
     if horse.assigned_shipment_id is not None:
         raise ValueError(f"horse {horse_id} is currently assigned")
+    if not horse.available or horse.condition <= 0 or horse.readiness <= 0:
+        raise ValueError(f"horse {horse_id} is operationally unavailable")
     return horse
 
 

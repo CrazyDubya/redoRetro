@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from .model import Business, Contract, Shipment, World
+from .model import Business, Contract, Shipment, World, require_finite
 from .simulation import route_path
 
 
@@ -55,6 +55,11 @@ def create_contract(
     destination_id: str,
     due_days: int,
 ) -> Contract:
+    require_finite(quantity, "contract quantity")
+    require_finite(unit_price, "contract unit price")
+    require_finite(due_days, "contract due days")
+    if seller_id == buyer_id:
+        raise ValueError("contract parties must be distinct")
     if quantity <= 0 or unit_price <= 0 or due_days < 0:
         raise ValueError("invalid contract terms")
     world._event_number += 1
@@ -150,7 +155,7 @@ def advance_shipments(world: World, hours: float = 1.0) -> list[str]:
     delivered: list[str] = []
     if (
         any(shipment.carrier_id is not None and shipment.status not in {"delivered", "failed"} for shipment in world.shipments.values())
-        or any(asset.assignment_kind == "reposition" for asset in world.transport_assets.values())
+        or any(asset.assignment_kind in {"reposition", "cargo_recovery"} for asset in world.transport_assets.values())
     ):
         from .transport import advance_freight
 
@@ -251,6 +256,12 @@ def advance_shipments(world: World, hours: float = 1.0) -> list[str]:
         except (KeyError, ValueError):
             world.pay(seller.id, buyer.id, total, reason=f"reverse failed {contract.id} settlement")
             raise
+        if buyer.kind == "market":
+            from .market import accept_market_delivery
+
+            market_id = next((market.id for market in world.markets.values() if market.place_id == buyer.location_id), None)
+            if market_id is not None:
+                accept_market_delivery(world, market_id, contract.good_type_id, contract.quantity, causes=contract.causal_event_ids[-1:])
         shipment.status = "delivered"
         contract.status = "delivered"
         contract.delivered_at = world.now

@@ -46,7 +46,7 @@ def conservation_errors(world: World, tolerance: float = 1e-6) -> list[str]:
     return [
         f"{good_id} conservation difference {values['difference']}"
         for good_id, values in conservation_report(world).items()
-        if abs(values["difference"]) > tolerance
+        if not math.isfinite(values["difference"]) or abs(values["difference"]) > tolerance
     ]
 
 
@@ -56,7 +56,7 @@ def market_balance_errors(world: World, tolerance: float = 1e-6) -> list[str]:
     for market in world.markets.values():
         for good_id, balance in market.balances.items():
             physical = world.quantity_held(market.place_id, good_id)
-            if abs(balance - physical) > tolerance:
+            if not math.isfinite(balance) or not math.isfinite(physical) or abs(balance - physical) > tolerance:
                 errors.append(f"{market.id}:{good_id} balance {balance} != physical {physical}")
     return errors
 
@@ -86,13 +86,17 @@ def validate_world(world: World) -> list[str]:
             errors.append(f"business {business.id} has non-finite finances")
         elif business.cash < -1e-9:
             errors.append(f"business {business.id} has negative cash")
+        for values in (business.production_rates, business.inventory_targets, business.production_capacity):
+            for label, value in values.items():
+                if not math.isfinite(value):
+                    errors.append(f"business {business.id} has non-finite {label}")
     for household in world.households.values():
         if not math.isfinite(household.cash) or not math.isfinite(household.debt):
             errors.append(f"household {household.id} has non-finite finances")
         elif household.cash < -1e-9:
             errors.append(f"household {household.id} has negative cash")
     for account in world.bank_accounts.values():
-        if not all(math.isfinite(value) for value in (account.balance, account.annual_interest_rate, account.service_charge)):
+        if not all(math.isfinite(value) for value in (account.balance, account.annual_interest_rate, account.minimum_balance, account.service_charge)):
             errors.append(f"bank account {account.id} has non-finite values")
     for loan in world.bank_loans.values():
         if not all(math.isfinite(value) for value in (loan.outstanding_principal, loan.accrued_interest, loan.annual_interest_rate)):
@@ -100,6 +104,12 @@ def validate_world(world: World) -> list[str]:
     for security in world.securities.values():
         if not math.isfinite(security.price) or not math.isfinite(security.outstanding_shares):
             errors.append(f"security {security.id} has non-finite values")
+    for property in world.properties.values():
+        if not all(math.isfinite(value) for value in (property.market_value, property.monthly_rent, property.mortgage_balance)):
+            errors.append(f"property {property.id} has non-finite values")
+    for asset in world.transport_assets.values():
+        if not all(math.isfinite(value) for value in (asset.capacity, asset.condition, asset.readiness, asset.fuel, asset.fuel_capacity, asset.operating_cost_per_hour, asset.operating_cost_due)):
+            errors.append(f"transport asset {asset.id} has non-finite values")
     errors.extend(market_balance_errors(world))
     return errors
 

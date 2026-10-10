@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import timedelta
 import math
 
-from .model import Business, InsuranceClaim, InsurancePolicy, World
+from .model import Business, InsuranceClaim, InsurancePolicy, World, require_finite
 
 
 def _money_holder(world: World, holder_id: str):
@@ -39,6 +39,7 @@ def issue_policy(
     _money_holder(world, policyholder_id)
     if region_id not in world.places:
         raise KeyError(region_id)
+    require_finite(term_days, "insurance term days")
     if (
         not line
         or not all(math.isfinite(value) for value in (premium, coverage_limit, deductible))
@@ -84,11 +85,27 @@ def file_claim(world: World, policy_id: str, *, loss_event_id: str, loss_amount:
     event = next((event for event in world.events if event.id == loss_event_id), None)
     if event is None:
         raise KeyError(loss_event_id)
+    loss_kind = str(event.data.get("loss_kind", event.kind)).lower()
+    if not any(token in loss_kind for token in ("fire", "loss", "damage", "destroy", "wreck", "broken")):
+        raise ValueError("loss event is not a covered physical loss")
     if event.at < policy.issued_at or event.at > policy.expires_at or event.at > world.now:
         raise ValueError("loss did not occur during the policy coverage period")
     if policy.policyholder_id not in event.actors and policy.policyholder_id not in event.entities:
         raise ValueError("loss event is not linked to the policyholder")
-    if not math.isfinite(loss_amount) or loss_amount <= 0:
+    location_id = event.data.get("location_id")
+    if location_id is None:
+        location_id = next((entity_id for entity_id in event.entities if entity_id in world.places), None)
+    if location_id is None:
+        location_id = world.location_of(policy.policyholder_id)
+    if location_id != policy.region_id:
+        raise ValueError("loss event occurred outside the insured region")
+    verified_loss = event.data.get("verified_loss_amount")
+    if verified_loss is not None:
+        require_finite(verified_loss, "verified loss amount")
+        if verified_loss <= 0 or loss_amount > verified_loss + 1e-9:
+            raise ValueError("claim exceeds the verified loss")
+    require_finite(loss_amount, "loss amount")
+    if loss_amount <= 0:
         raise ValueError("loss must be positive")
     claim_id = claim_id or f"claim-{len(world.insurance_claims) + 1}"
     if claim_id in world.insurance_claims:

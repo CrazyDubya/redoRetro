@@ -8,7 +8,7 @@ routes, and unloading/settlement occur only after physical arrival.
 from __future__ import annotations
 
 from .enterprise import allocate_contract
-from .model import Movement, Shipment, TransportAsset, TransportFacility, TransportService, World
+from .model import Movement, Shipment, TransportAsset, TransportFacility, TransportService, World, require_finite
 from .simulation import best_route, effective_route_hours, route_is_accessible, route_path
 
 
@@ -20,6 +20,22 @@ PACE_MULTIPLIERS = {
 
 
 def add_asset(world: World, asset: TransportAsset) -> TransportAsset:
+    for value, label in (
+        (asset.capacity, "transport capacity"),
+        (asset.condition, "transport condition"),
+        (asset.readiness, "transport readiness"),
+        (asset.fuel, "transport fuel"),
+        (asset.fuel_capacity, "transport fuel capacity"),
+        (asset.fuel_burn_per_hour, "transport fuel burn"),
+        (asset.operating_cost_per_hour, "transport operating cost"),
+    ):
+        require_finite(value, label)
+    for supply, quantity in asset.supplies.items():
+        require_finite(quantity, f"transport supply {supply}")
+    for supply, quantity in asset.supply_capacity.items():
+        require_finite(quantity, f"transport supply capacity {supply}")
+    for supply, quantity in asset.supply_burn_per_hour.items():
+        require_finite(quantity, f"transport supply burn {supply}")
     if asset.capacity <= 0:
         raise ValueError("transport capacity must be positive")
     if not 0 <= asset.condition <= 1:
@@ -32,6 +48,9 @@ def add_asset(world: World, asset: TransportAsset) -> TransportAsset:
         raise ValueError("transport crew cannot contain duplicates")
     if any(crew_id not in world.actors for crew_id in asset.crew_ids):
         raise KeyError("transport crew member is not an actor")
+    for crew_id in asset.crew_ids:
+        if any(crew_id in other.crew_ids for other in world.transport_assets.values() if other.id != asset.id):
+            raise ValueError(f"actor {crew_id} is already assigned to another asset")
     for supply, quantity in asset.supplies.items():
         if quantity < 0 or quantity > asset.supply_capacity.get(supply, quantity) + 1e-9:
             raise ValueError(f"invalid starting supply for {supply}")
@@ -59,6 +78,9 @@ def assign_crew(world: World, asset_id: str, crew_ids: tuple[str, ...]) -> Trans
 
 
 def add_facility(world: World, facility: TransportFacility) -> TransportFacility:
+    require_finite(facility.handling_capacity, "facility handling capacity")
+    if facility.storage_capacity is not None:
+        require_finite(facility.storage_capacity, "facility storage capacity")
     if facility.handling_capacity <= 0:
         raise ValueError("facility handling capacity must be positive")
     if facility.place_id not in world.places:
@@ -79,6 +101,9 @@ def add_service(world: World, service: TransportService) -> TransportService:
         raise ValueError("a transport service requires at least two stops")
     if any(place_id not in world.places for place_id in service.stop_place_ids):
         raise KeyError("service stop is not a world place")
+    require_finite(service.dwell_hours, "service dwell hours")
+    for hours in service.timetable_hours:
+        require_finite(hours, "service timetable hours")
     if service.dwell_hours < 0 or any(hours <= 0 for hours in service.timetable_hours):
         raise ValueError("service timing must be non-negative and timetable hours positive")
     if service.timetable_hours and len(service.timetable_hours) not in {len(service.stop_place_ids) - 1, len(service.stop_place_ids)}:
@@ -134,6 +159,7 @@ def _begin_service_leg(world: World, service: TransportService) -> bool:
     service.route_ids = tuple(route.id for route in path)
     service.route_index = 0
     service.elapsed_hours = 0.0
+    service.journey_elapsed_hours = 0.0
     service.status = "in_transit"
     world.record(
         "transport_service_departed",
@@ -153,6 +179,12 @@ def _advance_service(world: World, service: TransportService, hours: float) -> N
                 return
             service.status = "ready"
         if service.status == "blocked":
+            # A blocked multi-route leg may have already crossed one or more
+            # intermediate waypoints.  Resume the preserved physical route
+            # instead of restarting from the service's last named stop.
+            if service.route_ids and service.route_index < len(service.route_ids):
+                service.status = "in_transit"
+                continue
             if _begin_service_leg(world, service):
                 continue
             return
@@ -200,6 +232,7 @@ def _advance_service(world: World, service: TransportService, hours: float) -> N
         asset.accrued_operating_cost += asset.operating_cost_per_hour * step
         asset.operating_cost_due += asset.operating_cost_per_hour * step
         service.elapsed_hours += step
+        service.journey_elapsed_hours += step
         remaining -= step
         if service.elapsed_hours + 1e-9 < duration:
             return
@@ -214,24 +247,29 @@ def _advance_service(world: World, service: TransportService, hours: float) -> N
             service.completed_cycles += 1
         service.dwell_remaining_hours = service.dwell_hours
         service.status = "dwelling"
-        planned = service.timetable_hours[old_index % len(service.timetable_hours)] if service.timetable_hours else duration
-        service.late_hours += max(0.0, duration - planned)
+        planned = service.timetable_hours[old_index % len(service.timetable_hours)] if service.timetable_hours else service.journey_elapsed_hours
+        actual_hours = service.journey_elapsed_hours
+        service.late_hours += max(0.0, actual_hours - planned)
         world.record(
             "transport_service_arrived",
             f"{service.id} arrived at {asset.location_id}",
             entities=[service.id, asset.id, asset.location_id],
-            data={"planned_hours": planned, "actual_hours": duration, "late_hours": max(0.0, duration - planned)},
+            data={"planned_hours": planned, "actual_hours": actual_hours, "late_hours": max(0.0, actual_hours - planned)},
         )
 
 
-def advance_services(world: World, hours: float = 1.0) -> None:
+def advance_services(world: World, hours: float = 1.0, *, excluded_asset_ids: set[str] | None = None) -> None:
     """Advance ordered services without changing the global clock."""
+    require_finite(hours, "service time")
     if hours < 0:
         raise ValueError("service time cannot move backwards")
+    excluded_asset_ids = excluded_asset_ids or set()
     remaining = float(hours)
     while remaining > 1e-9:
         step = min(1.0, remaining)
         for service in world.transport_services.values():
+            if service.asset_id in excluded_asset_ids:
+                continue
             _advance_service(world, service, step)
         remaining -= step
 
@@ -346,6 +384,7 @@ def release_asset(
 
 def replenish_asset(world: World, asset_id: str, supply: str, quantity: float, *, source_id: str | None = None) -> float:
     """Add fuel or a named operational supply to a persistent asset."""
+    require_finite(quantity, "replenishment quantity")
     if quantity <= 0:
         raise ValueError("replenishment quantity must be positive")
     asset = world.transport_assets[asset_id]
@@ -368,6 +407,7 @@ def replenish_asset(world: World, asset_id: str, supply: str, quantity: float, *
 
 
 def repair_asset(world: World, asset_id: str, amount: float = 1.0) -> float:
+    require_finite(amount, "repair amount")
     if amount <= 0:
         raise ValueError("repair amount must be positive")
     asset = world.transport_assets[asset_id]
@@ -381,6 +421,7 @@ def repair_asset(world: World, asset_id: str, amount: float = 1.0) -> float:
 
 
 def consume_asset_supply(world: World, asset_id: str, supply: str, quantity: float, *, causes: tuple[str, ...] = ()) -> bool:
+    require_finite(quantity, "supply consumption")
     if quantity < 0:
         raise ValueError("supply consumption cannot be negative")
     asset = world.transport_assets[asset_id]
@@ -420,6 +461,8 @@ def dispatch_freight(
     route_ids: tuple[str, ...] | None = None,
 ) -> Shipment:
     """Create a queued physical freight journey without moving the clock."""
+    for value, label in ((loading_hours, "loading hours"), (unloading_hours, "unloading hours")):
+        require_finite(value, label)
     if loading_hours <= 0 or unloading_hours <= 0:
         raise ValueError("handling times must be positive")
     if pace not in PACE_MULTIPLIERS:
@@ -586,6 +629,17 @@ def divert_freight(world: World, shipment_id: str, route_ids: tuple[str, ...], *
     if previous != shipment.destination_id:
         raise ValueError("diversion must still reach the contracted destination")
     prefix = shipment.route_ids[:shipment.current_route_index]
+    if len(shipment.carrier_plan) > 1:
+        # The diverted remaining path is explicitly carried by the current
+        # asset.  Release future relay reservations only after the replacement
+        # path has been fully validated above.
+        for future_id in shipment.carrier_plan[shipment.carrier_plan_index + 1:]:
+            future = world.transport_assets.get(future_id)
+            if future is not None and future.reserved_for_shipment_id == shipment.id:
+                future.reserved_for_shipment_id = None
+                world.record("asset_relay_reservation_cleared", f"{future.id} released from diverted {shipment.id}", entities=[future.id, shipment.id])
+        shipment.carrier_plan = shipment.carrier_plan[:shipment.carrier_plan_index + 1]
+        shipment.relay_leg_counts = (*shipment.relay_leg_counts[:shipment.carrier_plan_index], len(route_ids))
     shipment.route_ids = tuple([*prefix, *route_ids])
     shipment.current_route_index = len(prefix)
     event = world.record(
@@ -1048,8 +1102,10 @@ def _settle_arrival(world: World, shipment: Shipment) -> None:
 
 def _advance_freight_step(world: World, hours: float) -> list[str]:
     """Advance one shared handling/movement interval without changing time."""
+    freight_assets = world.runtime.setdefault("_freight_advanced_assets", set())
     for asset in list(world.transport_assets.values()):
         if asset.assignment_kind in {"reposition", "cargo_recovery"}:
+            freight_assets.add(asset.id)
             _advance_asset_reposition(world, asset, hours)
     _admit_arrivals(world)
     _admit_loads(world)
@@ -1058,6 +1114,7 @@ def _advance_freight_step(world: World, hours: float) -> list[str]:
         if shipment.carrier_id is None or shipment.status in {"delivered", "failed"}:
             continue
         asset = world.transport_assets[shipment.carrier_id]
+        freight_assets.add(asset.id)
         origin = world.transport_facilities[shipment.origin_facility_id or ""]
         destination = world.transport_facilities[shipment.destination_facility_id or ""]
         remaining = float(hours)
@@ -1190,6 +1247,7 @@ def _advance_freight_step(world: World, hours: float) -> list[str]:
         if shipment.status == "unloading" and remaining > 1e-9:
             step = min(remaining, shipment.unloading_remaining_hours)
             shipment.unloading_remaining_hours -= step
+            destination.handling_hours += step
             if shipment.unloading_remaining_hours <= 1e-9:
                 destination.completed_operations += 1
                 _settle_arrival(world, shipment)
@@ -1254,6 +1312,7 @@ def resolve_failed_cargo(world: World, shipment_id: str) -> bool:
 
 def advance_freight(world: World, hours: float = 1.0) -> list[str]:
     """Advance freight on a shared facility timeline without changing time."""
+    require_finite(hours, "freight time")
     if hours < 0:
         raise ValueError("freight time cannot move backwards")
     settled: list[str] = []

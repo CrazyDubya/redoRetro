@@ -8,7 +8,7 @@ ledgers.
 
 from __future__ import annotations
 
-from .model import HorseState, World
+from .model import HorseState, World, require_finite
 from .transport import assign_asset
 
 
@@ -40,6 +40,8 @@ def add_horse(
         raise ValueError(f"horse state already exists for {asset_id}")
     if age_years < 0:
         raise ValueError("horse age cannot be negative")
+    for value, label in ((speed, "horse speed"), (stamina, "horse stamina"), (temperament, "horse temperament")):
+        require_finite(value, label)
     if any(not 0 <= value <= 1 for value in (speed, stamina, temperament)):
         raise ValueError("horse abilities must be between zero and one")
     profile = HorseState(
@@ -118,22 +120,29 @@ def race_horses(
     """
     if len(horse_ids) < 2 or len(set(horse_ids)) != len(horse_ids):
         raise ValueError("a race needs at least two distinct horses")
+    require_finite(distance_m, "race distance")
+    require_finite(purse, "race purse")
     if distance_m <= 0 or purse < 0:
         raise ValueError("race distance and purse must be non-negative")
     if surface not in {"grass", "dirt"}:
         raise ValueError("unknown race surface")
-    entries = []
+    # Validate every entrant before consuming any deterministic random draw.
+    # A rejected late entrant must not perturb the next valid race outcome.
     for horse_id in horse_ids:
         horse = world.transport_assets[horse_id]
         profile = world.horses[horse_id]
         if horse.asset_type != "horse" or horse.location_id != location_id:
             raise ValueError("all race entries must be co-located horses")
-        if horse.assigned_shipment_id is not None or profile.injury > 0:
+        if horse.assigned_shipment_id is not None or not horse.available or horse.condition <= 0 or profile.injury > 0:
             raise ValueError(f"horse {horse_id} is unavailable to race")
         if profile.age_years < 3:
             raise ValueError(f"horse {horse_id} is too young to race")
         if horse.readiness <= 0:
             raise ValueError(f"horse {horse_id} is not ready to race")
+    entries = []
+    for horse_id in horse_ids:
+        horse = world.transport_assets[horse_id]
+        profile = world.horses[horse_id]
         surface_ability = profile.speed if surface == "grass" else profile.stamina
         distance_factor = profile.stamina if distance_m >= 1800 else profile.speed
         condition = max(0.0, 1.0 - profile.fatigue)
@@ -175,4 +184,3 @@ def race_horses(
             data={"place": order.index(horse_id) + 1, "winner": winner_id},
         )
     return order
-

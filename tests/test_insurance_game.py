@@ -43,7 +43,7 @@ class InsuranceGameTests(unittest.TestCase):
             insurer.id,
             customer.id,
             line="cargo",
-            region_id="dock",
+            region_id="warehouse",
             premium=10.0,
             coverage_limit=80.0,
             policy_id="policy-2",

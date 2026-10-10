@@ -22,6 +22,25 @@ from redos.transport import (
 
 
 class CrossSystemCorrectnessTests(unittest.TestCase):
+    def test_self_payment_is_rejected_without_minting_money(self):
+        world = build_tiny_world(seed=200)
+        holder = world.businesses["warehouse-business"]
+        before = holder.cash
+        with self.assertRaises(ValueError):
+            world.pay(holder.id, holder.id, 10.0)
+        self.assertEqual(holder.cash, before)
+
+    def test_non_finite_canonical_inputs_are_rejected_before_mutation(self):
+        world = build_tiny_world(seed=2001)
+        seller = world.businesses["shop-market-cashier"]
+        before_lots = dict(world.lots)
+        with self.assertRaises(ValueError):
+            world.consume_goods(seller.id, "metals", math.nan)
+        self.assertEqual(world.lots, before_lots)
+        with self.assertRaises(ValueError):
+            create_contract(world, seller.id, "warehouse-business", "metals", math.inf, 10.0, origin_id="shop", destination_id="warehouse", due_days=1)
+        self.assertEqual(world.contracts, {})
+
     def test_bank_fee_and_interest_use_the_correct_side_of_the_ledger(self):
         world = build_tiny_world(seed=201)
         world.add(Business("bank", "Harbor Bank", "shop", "bank", cash=1_000.0))
@@ -66,6 +85,18 @@ class CrossSystemCorrectnessTests(unittest.TestCase):
         world.advance(days=31)
         self.assertEqual(insurer_exposure(world, "insurer")["approved_claims"], 60.0)
 
+    def test_insurance_rejects_non_loss_events_and_unverified_excess(self):
+        world = build_tiny_world(seed=2031)
+        world.add(Business("insurer", "Harbor Mutual", "shop", "insurer", cash=500.0))
+        customer = world.businesses["warehouse-business"]
+        customer.cash = 300.0
+        policy = issue_policy(world, "insurer", customer.id, line="cargo", region_id="warehouse", premium=10.0, coverage_limit=100.0, policy_id="policy")
+        with self.assertRaises(ValueError):
+            file_claim(world, policy.id, loss_event_id=next(event.id for event in world.events if event.kind == "policy_issued"), loss_amount=20.0)
+        loss = world.record("cargo_damage", "verified cargo damage", actors=[customer.id], entities=["warehouse"], data={"verified_loss_amount": 40.0})
+        with self.assertRaises(ValueError):
+            file_claim(world, policy.id, loss_event_id=loss.id, loss_amount=41.0)
+
     def test_services_advance_on_the_normal_world_clock(self):
         world = build_tiny_world(seed=204)
         owner = world.businesses["warehouse-business"]
@@ -74,6 +105,30 @@ class CrossSystemCorrectnessTests(unittest.TestCase):
         advance_world(world, 24)
         self.assertEqual(world.transport_assets["clock-cart"].location_id, "tavern")
         self.assertEqual(world.transport_services["clock-service"].current_stop_index, 1)
+
+    def test_freight_and_service_share_one_world_clock_hour(self):
+        world = build_tiny_world(seed=2041)
+        seller = world.businesses["shop-market-cashier"]
+        buyer = world.businesses["north-market-cashier"]
+        seller.cash = buyer.cash = 500_000.0
+        world.create_lot("metals", 1.0, holder_id=seller.id, owner_id=seller.id, provenance=("shared-clock",))
+        add_asset(world, TransportAsset("shared-cart", "Shared Cart", "cart", "shop", seller.id, capacity=1, fuel=100.0, fuel_capacity=100.0, fuel_burn_per_hour=0.1))
+        add_service(world, TransportService("shared-service", "shared-cart", ("shop", "tavern"), timetable_hours=(24.0,)))
+        add_facility(world, TransportFacility("shared-origin", "shop", 1))
+        add_facility(world, TransportFacility("shared-destination", "tavern", 1))
+        contract = create_contract(world, seller.id, buyer.id, "metals", 1.0, 20.0, origin_id="shop", destination_id="tavern", due_days=2)
+        shipment = dispatch_freight(world, contract.id, carrier_id="shared-cart", origin_facility_id="shared-origin", destination_facility_id="shared-destination", service_id="shared-service")
+        advance_world(world, 1)
+        self.assertEqual(shipment.status, "in_transit")
+        self.assertEqual(world.transport_services["shared-service"].current_stop_index, 0)
+
+    def test_cargo_recovery_advances_through_normal_world_clock(self):
+        world, seller, shipment = self._failed_freight_world()
+        advance_freight(world, 50)
+        self.assertTrue(resolve_failed_cargo(world, shipment.id))
+        advance_world(world, 25)
+        self.assertEqual(world.quantity_held(seller.id, "metals"), 1.0)
+        self.assertEqual(world.quantity_held("recovery-cart", "metals"), 0.0)
 
     def test_service_vehicle_cannot_be_double_booked_while_in_transit(self):
         world = build_tiny_world(seed=209)
@@ -142,8 +197,25 @@ class CrossSystemCorrectnessTests(unittest.TestCase):
         with self.assertRaises(KeyError):
             book_ocean_trade(world, trade, seller_id=seller.id, buyer_id=buyer.id, origin_facility_id="missing-origin", destination_facility_id="missing-destination", due_days=2)
         self.assertEqual(len(world.shipments), 0)
-        self.assertEqual(len(world.contracts), 1)
-        self.assertEqual(next(iter(world.contracts.values())).status, "failed")
+        self.assertEqual(len(world.contracts), 0)
+        self.assertTrue(any(event.kind == "booking_rejected" for event in world.events))
+
+    def test_ocean_quote_and_booking_use_one_owned_market_lot(self):
+        world = build_tiny_world(seed=208)
+        seller = world.businesses["shop-market-cashier"]
+        buyer = world.businesses["north-market-cashier"]
+        seller.cash = buyer.cash = 500_000.0
+        world.create_lot("metals", 1.0, holder_id="shop", owner_id=seller.id, provenance=("single-market-lot",))
+        world.markets["north-market"].demand_backlog["metals"] = 20.0
+        add_asset(world, TransportAsset("single-lot-cart", "Single Lot Cart", "cart", "shop", seller.id, capacity=1, fuel=100.0, fuel_capacity=100.0, fuel_burn_per_hour=0.1))
+        add_facility(world, TransportFacility("single-lot-origin", "shop", 1))
+        add_facility(world, TransportFacility("single-lot-destination", "north", 1))
+        trade = quote_ocean_trade(world, "shop-market", "north-market", "metals", "single-lot-cart", quantity=1)
+        shipment = book_ocean_trade(world, trade, seller_id=seller.id, buyer_id=buyer.id, origin_facility_id="single-lot-origin", destination_facility_id="single-lot-destination", due_days=4)
+        self.assertEqual(world.quantity_held("single-lot-cart", "metals"), 0.0)
+        advance_freight(world, 1)
+        self.assertEqual(world.quantity_held("single-lot-cart", "metals"), 1.0)
+        self.assertEqual(shipment.status, "in_transit")
 
     def test_market_delivery_remains_visible_to_market_purchases(self):
         world = build_tiny_world(seed=207)
