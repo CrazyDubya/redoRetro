@@ -83,7 +83,7 @@ def create_contract(
     return contract
 
 
-def allocate_contract(world: World, contract_id: str) -> Contract:
+def allocate_contract(world: World, contract_id: str, *, source_place_id: str | None = None) -> Contract:
     contract = world.contracts[contract_id]
     if contract.status != "open":
         raise ValueError("contract is not open")
@@ -95,7 +95,10 @@ def allocate_contract(world: World, contract_id: str) -> Contract:
         and other.good_type_id == contract.good_type_id
         and other.status in {"allocated", "in_transit"}
     )
-    if world.quantity_held(seller.id, contract.good_type_id) - reserved + 1e-9 < contract.quantity:
+    available = world.quantity_held(seller.id, contract.good_type_id)
+    if source_place_id is not None:
+        available = max(available, world.quantity_owned_at(seller.id, source_place_id, contract.good_type_id))
+    if available - reserved + 1e-9 < contract.quantity:
         contract.status = "failed"
         contract.failure_reason = "goods unavailable at allocation"
         failed = world.record("contract_failed", f"{contract.id} could not allocate goods", actors=[seller.id], entities=[contract.id], data={"reason": contract.failure_reason})
@@ -113,7 +116,7 @@ def dispatch_contract(world: World, contract_id: str) -> Contract:
     if contract.shipment_id is not None or contract.status not in {"open", "allocated"}:
         raise ValueError(f"contract {contract_id} is already dispatched or not dispatchable")
     if contract.status == "open":
-        allocate_contract(world, contract_id)
+        allocate_contract(world, contract_id, source_place_id=contract.origin_id)
     if contract.status != "allocated":
         raise ValueError(f"contract {contract_id} is not allocated")
     path = route_path(world, contract.origin_id, contract.destination_id)

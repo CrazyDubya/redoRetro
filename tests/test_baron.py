@@ -42,6 +42,18 @@ class BaronTests(unittest.TestCase):
         self.assertEqual(property.owner_id, owner.id)
         self.assertEqual(owner.cash, before_owner + 10.0)
 
+    def test_property_sale_preserves_existing_tenancy(self):
+        world, property, owner, buyer = self._world()
+        tenant = world.households["tenant-household"]
+        before_buyer = buyer.cash
+        lease_property(world, property.id, tenant.id)
+        buy_property(world, property.id, buyer.id, owner.id)
+        self.assertEqual(property.owner_id, buyer.id)
+        self.assertEqual(property.occupied_by_id, tenant.id)
+        world.advance(days=30)
+        self.assertEqual(collect_rent(world, property.id), 10.0)
+        self.assertEqual(buyer.cash, before_buyer - property.market_value + 10.0)
+
 
 if __name__ == "__main__":
     unittest.main()

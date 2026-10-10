@@ -77,7 +77,13 @@ class CrossSystemCorrectnessTests(unittest.TestCase):
         policy = issue_policy(world, "insurer", customer.id, line="cargo", region_id="warehouse", premium=10.0, coverage_limit=100.0, policy_id="policy")
         with self.assertRaises(ValueError):
             file_claim(world, policy.id, loss_event_id=before_policy.id, loss_amount=20.0)
-        loss = world.record("fire", "customer stock burned", actors=[customer.id])
+        loss = world.record(
+            "fire",
+            "customer stock burned",
+            actors=[customer.id],
+            entities=["warehouse"],
+            data={"loss_kind": "fire", "covered_risk": "cargo", "verified_loss_amount": 60.0},
+        )
         claim = file_claim(world, policy.id, loss_event_id=loss.id, loss_amount=60.0, claim_id="claim")
         with self.assertRaises(ValueError):
             file_claim(world, policy.id, loss_event_id=loss.id, loss_amount=60.0, claim_id="claim-again")
@@ -93,7 +99,13 @@ class CrossSystemCorrectnessTests(unittest.TestCase):
         policy = issue_policy(world, "insurer", customer.id, line="cargo", region_id="warehouse", premium=10.0, coverage_limit=100.0, policy_id="policy")
         with self.assertRaises(ValueError):
             file_claim(world, policy.id, loss_event_id=next(event.id for event in world.events if event.kind == "policy_issued"), loss_amount=20.0)
-        loss = world.record("cargo_damage", "verified cargo damage", actors=[customer.id], entities=["warehouse"], data={"verified_loss_amount": 40.0})
+        loss = world.record(
+            "cargo_damage",
+            "verified cargo damage",
+            actors=[customer.id],
+            entities=["warehouse"],
+            data={"loss_kind": "theft", "covered_risk": "cargo", "verified_loss_amount": 40.0},
+        )
         with self.assertRaises(ValueError):
             file_claim(world, policy.id, loss_event_id=loss.id, loss_amount=41.0)
 
@@ -185,7 +197,7 @@ class CrossSystemCorrectnessTests(unittest.TestCase):
         self.assertEqual(world.quantity_held(seller.id, "metals"), 1.0)
         self.assertEqual(world.quantity_held("recovery-cart", "metals"), 0.0)
 
-    def test_ocean_booking_failure_is_an_explicit_failed_obligation(self):
+    def test_ocean_booking_rejection_does_not_mutate_cargo_or_create_contract(self):
         world = build_tiny_world(seed=206)
         seller = world.businesses["shop-market-cashier"]
         buyer = world.businesses["north-market-cashier"]
@@ -194,10 +206,15 @@ class CrossSystemCorrectnessTests(unittest.TestCase):
         world.create_lot("metals", 1.0, holder_id="shop", owner_id=seller.id, provenance=("booking-port-stock",))
         add_asset(world, TransportAsset("booking-cart", "Booking Cart", "cart", "shop", seller.id, capacity=1, fuel=100.0, fuel_capacity=100.0, fuel_burn_per_hour=0.1))
         trade = quote_ocean_trade(world, "shop-market", "north-market", "metals", "booking-cart", quantity=1)
+        before_events = len(world.events)
+        before_shop_stock = world.quantity_held("shop", "metals")
         with self.assertRaises(KeyError):
             book_ocean_trade(world, trade, seller_id=seller.id, buyer_id=buyer.id, origin_facility_id="missing-origin", destination_facility_id="missing-destination", due_days=2)
         self.assertEqual(len(world.shipments), 0)
         self.assertEqual(len(world.contracts), 0)
+        self.assertEqual(world.quantity_held("shop", "metals"), before_shop_stock)
+        self.assertEqual(len(world.events), before_events + 1)
+        self.assertFalse(any(event.kind in {"contract_signed", "goods_transfer"} for event in world.events[before_events:]))
         self.assertTrue(any(event.kind == "booking_rejected" for event in world.events))
 
     def test_ocean_quote_and_booking_use_one_owned_market_lot(self):

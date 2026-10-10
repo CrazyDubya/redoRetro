@@ -541,7 +541,7 @@ def dispatch_freight(
                 raise ValueError(f"carrier {planned_id} cannot use route {route.id}")
         route_offset += planned_legs[plan_index]
     if contract.status == "open":
-        allocate_contract(world, contract_id)
+        allocate_contract(world, contract_id, source_place_id=origin.place_id)
     if contract.status != "allocated":
         raise ValueError(f"contract {contract_id} is not allocated")
     shipment = Shipment(
@@ -1138,6 +1138,17 @@ def _advance_freight_step(world: World, hours: float) -> list[str]:
             if shipment.loading_remaining_hours > 1e-9:
                 continue
             contract = world.contracts[shipment.contract_id]
+            held_by_seller = world.quantity_held(contract.seller_id, contract.good_type_id)
+            if held_by_seller + 1e-9 < contract.quantity:
+                world.transfer_owned_goods_at(
+                    contract.seller_id,
+                    origin.place_id,
+                    contract.good_type_id,
+                    contract.quantity - held_by_seller,
+                    to_holder=contract.seller_id,
+                    causes=contract.causal_event_ids[-1:],
+                    reason=f"{contract.id} market custody made available for loading",
+                )
             loaded = world.transfer_goods(
                 contract.good_type_id,
                 contract.quantity,

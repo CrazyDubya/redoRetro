@@ -51,8 +51,6 @@ def buy_property(world: World, property_id: str, buyer_id: str, seller_id: str, 
         raise ValueError("property price must be positive")
     payment = world.pay(buyer_id, seller_id, amount, reason=f"{property.id} purchase")
     property.owner_id = buyer_id
-    property.occupied_by_id = None
-    property.last_rent_at = None
     world.record(
         "property_transferred",
         f"{buyer_id} bought {property.id}",

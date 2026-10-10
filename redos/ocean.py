@@ -13,7 +13,7 @@ import math
 from .enterprise import create_contract
 from .market import quote
 from .model import Shipment, World
-from .simulation import effective_route_hours, route_path
+from .simulation import effective_route_hours, route_is_accessible, route_path
 from .transport import dispatch_freight, service_accepts
 
 
@@ -154,20 +154,33 @@ def book_ocean_trade(
         raise ValueError("quoted carrier lacks its required crew")
     if asset.location_id != origin_place:
         raise ValueError("quoted carrier is no longer at the origin")
+    service = world.transport_services.get(service_id or "") if service_id else None
+    if service_id and service is None:
+        raise KeyError(service_id)
+    if service is not None:
+        if service.asset_id != asset.id or service.status not in {"ready", "waiting_asset"}:
+            raise ValueError("service is not ready for this carrier")
+        if service.stop_place_ids[service.current_stop_index] != origin_place:
+            raise ValueError("trade origin is not the service's current stop")
+        next_stop = service.stop_place_ids[(service.current_stop_index + 1) % len(service.stop_place_ids)]
+        if next_stop != destination_place:
+            raise ValueError("trade destination is not the service's next stop")
+        if not service_accepts(service, trade.good_type_id):
+            raise ValueError("transport service does not accept this cargo")
     if world.quantity_owned_at(seller_id, origin_place, trade.good_type_id) + 1e-9 < trade.quantity:
         raise ValueError("seller does not own the quoted physical cargo at the origin")
-    if world.quantity_held(seller_id, trade.good_type_id) + 1e-9 < trade.quantity:
-        world.transfer_owned_goods_at(
-            seller_id,
-            origin_place,
-            trade.good_type_id,
-            trade.quantity - world.quantity_held(seller_id, trade.good_type_id),
-            to_holder=seller_id,
-            reason="market stock made available to its owning seller",
-        )
-    service = world.transport_services.get(service_id or "") if service_id else None
-    if service is not None and not service_accepts(service, trade.good_type_id):
-        raise ValueError("transport service does not accept this cargo")
+    if not asset.available or asset.assigned_shipment_id is not None or asset.reserved_for_shipment_id is not None:
+        raise ValueError("quoted carrier is no longer available")
+    if asset.cargo_clearance_pending or sum(lot.quantity for lot in world.lots_held_by(asset.id)) > 1e-9:
+        raise ValueError("quoted carrier still holds unresolved cargo")
+    if asset.condition <= 0 or asset.readiness <= 0 or len(asset.crew_ids) < asset.minimum_crew:
+        raise ValueError("quoted carrier is not ready for dispatch")
+    if not all(route_is_accessible(world, route, mode=asset.asset_type) for route in route_path(world, origin_place, destination_place, mode=asset.asset_type)):
+        raise ValueError("quoted route is not currently accessible")
+    if not math.isfinite(loading_hours) or not math.isfinite(unloading_hours) or loading_hours <= 0 or unloading_hours <= 0:
+        raise ValueError("handling times must be positive and finite")
+    if sum(lot.quantity for lot in world.lots_held_by(asset.id)) + trade.quantity > asset.capacity + 1e-9:
+        raise ValueError("quoted carrier capacity exceeded")
     contract = create_contract(
         world,
         seller_id,
