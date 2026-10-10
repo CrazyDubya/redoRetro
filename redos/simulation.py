@@ -9,7 +9,7 @@ import heapq
 from typing import Iterable
 
 from .living import activity_for_hour
-from .model import Actor, AggregatePopulation, Route, RouteCondition, World
+from .model import Actor, AggregatePopulation, Route, RouteCondition, World, require_finite
 
 
 TERRAIN_TRAVEL_MULTIPLIERS = {
@@ -85,6 +85,8 @@ def set_route_condition(
     waterway: str = "calm",
     causes: tuple[str, ...] = (),
 ) -> RouteCondition:
+    require_finite(travel_multiplier, "route travel multiplier")
+    require_finite(wind, "route wind")
     if route_id not in world.routes:
         raise KeyError(route_id)
     if travel_multiplier <= 0:
@@ -126,6 +128,8 @@ def apply_transport_weather(
 ) -> str:
     """Inject one auditable weather stimulus across selected transport routes."""
     selected = tuple(route_ids)
+    require_finite(travel_multiplier, "weather travel multiplier")
+    require_finite(wind, "weather wind")
     if not selected:
         raise ValueError("weather must affect at least one route")
     # Validate the complete update before recording the external stimulus or
@@ -367,6 +371,7 @@ def tick(world: World, hours: float = 1) -> None:
     available time, rather than waiting until the next external tick to start
     its next route leg.
     """
+    require_finite(hours, "tick hours")
     if hours < 0:
         raise ValueError("hours cannot be negative")
     remaining = float(hours)
@@ -386,6 +391,7 @@ def interrupt(
     reason: str,
     causes: Iterable[str] = (),
 ) -> None:
+    require_finite(hours, "interruption hours")
     if hours <= 0:
         raise ValueError("an interruption must last at least one hour")
     actor = world.actors[actor_id]

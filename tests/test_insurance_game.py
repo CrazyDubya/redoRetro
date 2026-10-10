@@ -1,7 +1,7 @@
 import unittest
 
 from redos.bootstrap import build_tiny_world
-from redos.insurance import approve_claim, file_claim, insurer_exposure, issue_policy, settle_claim
+from redos.insurance import approve_claim, file_claim, insurer_exposure, issue_policy, record_loss, settle_claim
 from redos.model import Business
 
 
@@ -27,13 +27,7 @@ class InsuranceGameTests(unittest.TestCase):
             policy_id="policy-1",
         )
         self.assertEqual(customer.cash, 175.0)
-        loss = world.record(
-            "warehouse_fire",
-            "warehouse stock damaged",
-            actors=[customer.id],
-            entities=["warehouse"],
-            data={"loss_kind": "flood", "covered_risk": "property", "verified_loss_amount": 140.0},
-        )
+        loss = record_loss(world, customer.id, loss_kind="flood", covered_risk="property", location_id="warehouse", verified_loss_amount=140.0, description="warehouse stock damaged")
         claim = file_claim(world, policy.id, loss_event_id=loss.id, loss_amount=140.0, claim_id="claim-1")
         self.assertEqual(claim.indemnity, 100.0)
         self.assertEqual(approve_claim(world, claim.id), 100.0)
@@ -57,13 +51,7 @@ class InsuranceGameTests(unittest.TestCase):
         unrelated = world.record("dock_fire", "a different merchant's cargo burned", actors=["merchant"])
         with self.assertRaises(ValueError):
             file_claim(world, policy.id, loss_event_id=unrelated.id, loss_amount=20.0)
-        loss = world.record(
-            "warehouse_fire",
-            "customer cargo damaged",
-            actors=[customer.id],
-            entities=["warehouse"],
-            data={"loss_kind": "theft", "covered_risk": "cargo", "verified_loss_amount": 60.0},
-        )
+        loss = record_loss(world, customer.id, loss_kind="theft", covered_risk="cargo", location_id="warehouse", verified_loss_amount=60.0, description="customer cargo damaged")
         claim = file_claim(world, policy.id, loss_event_id=loss.id, loss_amount=60.0, claim_id="claim-2")
         approve_claim(world, claim.id)
         insurer.cash = 0.0

@@ -13,13 +13,15 @@ from datetime import datetime, timedelta
 from typing import Iterable
 
 from .enterprise import advance_shipments, compete, create_contract, dispatch_contract
-from .bank import accrue_deposit_interest, accrue_loan_interest
+from .bank import advance_finance
 from .employment import charge_household_expense, pay_wages
 from .living import Recipe, meet, produce, propagate_information, recollect, revise_belief, tell, witness_event
+from .insurance import advance_claims
 from .market import buy, refresh_market
-from .model import Actor, World
+from .model import Actor, World, require_finite
+from .realestate import advance_rents
 from .simulation import _start_next_leg, route_path, tick
-from .transport import advance_services, dispatch_freight
+from .transport import advance_failed_cargo_recovery, advance_services, dispatch_freight, settle_operating_cost
 
 
 @dataclass(frozen=True)
@@ -274,6 +276,8 @@ def _settle_day(world: World) -> None:
     for household in world.households.values():
         if household.daily_expenses > 0 and household.members:
             charge_household_expense(world, household.members[0], household.daily_expenses, expense="household costs", payee_id=world.runtime.get("expense_payee"))
+    advance_claims(world)
+    advance_rents(world)
     _adjudicate_businesses(world)
     for market_id in world.markets:
         refresh_market(world, market_id)
@@ -339,32 +343,35 @@ def adjudicate_hour(world: World, *, external_events: Iterable[DockIncident] = (
         _adjudicate_businesses(world)
 
 
-def advance_world(world: World, hours: int = 1, *, external_events: Iterable[DockIncident] = ()) -> None:
+def advance_world(world: World, hours: float = 1, *, external_events: Iterable[DockIncident] = ()) -> None:
+    require_finite(hours, "world time")
     if hours < 0:
         raise ValueError("time cannot move backwards")
     incidents = tuple(external_events)
-    for _ in range(hours):
+    remaining = float(hours)
+    while remaining > 1e-9:
+        step = min(1.0, remaining)
         if world.now.hour == 23:
             _settle_day(world)
-        tick(world, 1)
-        advance_shipments(world, 1)
+        tick(world, step)
+        advance_failed_cargo_recovery(world)
+        advance_shipments(world, step)
         freight_assets = set(world.runtime.pop("_freight_advanced_assets", set()))
         # Ordered carrier services are part of the normal world clock.  Tests
         # may advance them directly, but a registered service must also run
         # autonomously during ordinary simulation.  A service-backed carrier
         # gets one shared hour, never one hour in freight plus another hour in
         # its timetable service during the same world tick.
-        advance_services(world, 1, excluded_asset_ids=freight_assets)
+        advance_services(world, step, excluded_asset_ids=freight_assets)
+        for asset in world.transport_assets.values():
+            if asset.operating_cost_due > 1e-9:
+                settle_operating_cost(world, asset.id)
         # Financial obligations are ordinary world-clock participants.  The
         # kernels remain callable for focused operations, while live accounts
         # and loans accrue without a scenario script having to remember them.
-        for account in world.bank_accounts.values():
-            if account.status == "open":
-                accrue_deposit_interest(world, account.id)
-        for loan in world.bank_loans.values():
-            if loan.status == "open":
-                accrue_loan_interest(world, loan.id)
+        advance_finance(world)
         adjudicate_hour(world, external_events=incidents)
+        remaining -= step
 
 
 def run(world: World, days: int, *, external_events: Iterable[DockIncident] = ()) -> World:

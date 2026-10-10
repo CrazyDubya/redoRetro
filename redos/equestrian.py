@@ -8,7 +8,7 @@ events remain shared with carts and vessels.
 
 from __future__ import annotations
 
-from .model import HorseState, Movement, World
+from .model import HorseState, Movement, World, require_finite
 from .transport import board_passenger, replenish_asset
 
 
@@ -55,6 +55,7 @@ def care_for_horse(
     location or creates an inventory source; feed must already be supplied by
     a canonical holder through ``replenish_asset``.
     """
+    require_finite(amount, "horse care amount")
     if amount <= 0:
         raise ValueError("care amount must be positive")
     horse = _require_idle_horse(world, horse_id)

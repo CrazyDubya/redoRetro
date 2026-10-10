@@ -5,7 +5,53 @@ from __future__ import annotations
 from datetime import timedelta
 import math
 
-from .model import Business, InsuranceClaim, InsurancePolicy, World, require_finite
+from .model import Business, CausalEvent, InsuranceClaim, InsurancePolicy, World, require_finite
+
+
+def record_loss(
+    world: World,
+    subject_id: str,
+    *,
+    loss_kind: str,
+    covered_risk: str,
+    location_id: str,
+    verified_loss_amount: float,
+    description: str | None = None,
+    causes: tuple[str, ...] = (),
+) -> CausalEvent:
+    """Register an authoritative, typed loss for later claims assessment.
+
+    Insurance claims may only reference losses created through this gateway.
+    A normal causal event is evidence about the world, but is not by itself an
+    assessed monetary loss.  Keeping that distinction prevents policy, chat,
+    payment, and movement events from being turned into arbitrary payouts.
+    """
+    _money_holder(world, subject_id)
+    if location_id not in world.places:
+        raise KeyError(location_id)
+    if not isinstance(loss_kind, str) or not loss_kind.strip():
+        raise ValueError("loss kind must be non-empty")
+    if not isinstance(covered_risk, str) or not covered_risk.strip():
+        raise ValueError("covered risk must be non-empty")
+    require_finite(verified_loss_amount, "verified loss amount")
+    if verified_loss_amount <= 0:
+        raise ValueError("verified loss amount must be positive")
+    event = world.record(
+        "loss_verified",
+        description or f"{subject_id} suffered a verified {loss_kind} loss",
+        actors=[subject_id],
+        entities=[subject_id, location_id],
+        causes=causes,
+        data={
+            "loss_kind": loss_kind,
+            "covered_risk": covered_risk,
+            "loss_location_id": location_id,
+            "verified_loss_amount": verified_loss_amount,
+            "authority": "canonical-loss-registry",
+        },
+    )
+    world.runtime.setdefault("verified_loss_event_ids", set()).add(event.id)
+    return event
 
 
 def _money_holder(world: World, holder_id: str):
@@ -85,6 +131,8 @@ def file_claim(world: World, policy_id: str, *, loss_event_id: str, loss_amount:
     event = next((event for event in world.events if event.id == loss_event_id), None)
     if event is None:
         raise KeyError(loss_event_id)
+    if loss_event_id not in world.runtime.get("verified_loss_event_ids", set()) or event.kind != "loss_verified":
+        raise ValueError("claim must reference an authoritative verified loss")
     loss_kind = event.data.get("loss_kind")
     if not isinstance(loss_kind, str) or not loss_kind.strip():
         raise ValueError("loss event must declare an explicit loss kind")
@@ -193,3 +241,19 @@ def insurer_exposure(world: World, insurer_id: str) -> dict[str, float]:
         "coverage_limit": sum(policy.coverage_limit for policy in active),
         "approved_claims": sum(claim.indemnity for claim in open_claims),
     }
+
+
+def advance_claims(world: World) -> None:
+    """Attempt payment of every approved claim during ordinary settlement."""
+    for claim in world.insurance_claims.values():
+        if claim.status != "approved":
+            continue
+        try:
+            settle_claim(world, claim.id)
+        except (KeyError, ValueError) as exc:
+            world.record(
+                "claim_payment_deferred",
+                f"approved claim {claim.id} remains unpaid",
+                entities=[claim.id, claim.policy_id],
+                data={"amount": claim.indemnity, "reason": str(exc)},
+            )

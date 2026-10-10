@@ -6,7 +6,7 @@ from redos.bank import charge_account_fee, deposit, open_account, originate_loan
 from redos.bootstrap import build_tiny_world
 from redos.enterprise import create_contract, dispatch_contract
 from redos.insider import execute_trade, issue_security
-from redos.insurance import approve_claim, file_claim, insurer_exposure, issue_policy
+from redos.insurance import approve_claim, file_claim, insurer_exposure, issue_policy, record_loss
 from redos.model import Business, TransportAsset, TransportFacility, TransportService
 from redos.ocean import book_ocean_trade, quote_ocean_trade
 from redos.runtime import advance_world
@@ -79,13 +79,7 @@ class CrossSystemCorrectnessTests(unittest.TestCase):
         policy = issue_policy(world, "insurer", customer.id, line="cargo", region_id="warehouse", premium=10.0, coverage_limit=100.0, policy_id="policy")
         with self.assertRaises(ValueError):
             file_claim(world, policy.id, loss_event_id=before_policy.id, loss_amount=20.0)
-        loss = world.record(
-            "fire",
-            "customer stock burned",
-            actors=[customer.id],
-            entities=["warehouse"],
-            data={"loss_kind": "fire", "covered_risk": "cargo", "verified_loss_amount": 60.0},
-        )
+        loss = record_loss(world, customer.id, loss_kind="fire", covered_risk="cargo", location_id="warehouse", verified_loss_amount=60.0, description="customer stock burned")
         claim = file_claim(world, policy.id, loss_event_id=loss.id, loss_amount=60.0, claim_id="claim")
         with self.assertRaises(ValueError):
             file_claim(world, policy.id, loss_event_id=loss.id, loss_amount=60.0, claim_id="claim-again")
@@ -101,13 +95,7 @@ class CrossSystemCorrectnessTests(unittest.TestCase):
         policy = issue_policy(world, "insurer", customer.id, line="cargo", region_id="warehouse", premium=10.0, coverage_limit=100.0, policy_id="policy")
         with self.assertRaises(ValueError):
             file_claim(world, policy.id, loss_event_id=next(event.id for event in world.events if event.kind == "policy_issued"), loss_amount=20.0)
-        loss = world.record(
-            "cargo_damage",
-            "verified cargo damage",
-            actors=[customer.id],
-            entities=["warehouse"],
-            data={"loss_kind": "theft", "covered_risk": "cargo", "verified_loss_amount": 40.0},
-        )
+        loss = record_loss(world, customer.id, loss_kind="theft", covered_risk="cargo", location_id="warehouse", verified_loss_amount=40.0, description="verified cargo damage")
         with self.assertRaises(ValueError):
             file_claim(world, policy.id, loss_event_id=loss.id, loss_amount=41.0)
 

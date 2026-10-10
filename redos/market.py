@@ -239,6 +239,8 @@ def _debit_credit(world: World, buyer_id: str, seller_id: str, amount: float, *,
 
 def buy(world: World, buyer_id: str, market_id: str, good_type_id: str, quantity: float, *, offer: float | None = None) -> TradeQuote:
     require_finite(quantity, "market purchase quantity")
+    if quantity <= 0:
+        raise ValueError("market purchase quantity must be positive")
     if offer is not None:
         require_finite(offer, "market offer")
     market = world.markets[market_id]
@@ -279,6 +281,9 @@ def _market_cashier(world: World, place_id: str) -> str:
 
 
 def sell(world: World, seller_id: str, market_id: str, good_type_id: str, quantity: float, *, ask: float | None = None) -> TradeQuote:
+    require_finite(quantity, "market sale quantity")
+    if quantity <= 0:
+        raise ValueError("market sale quantity must be positive")
     market = world.markets[market_id]
     if world.location_of(seller_id) != market.place_id:
         raise ValueError("seller must be physically present at the market")

@@ -1064,18 +1064,9 @@ class World:
                             entities=[transport_asset.id, movement.id],
                             data={"amount": cost, "outstanding": transport_asset.operating_cost_due},
                         )
-                        if transport_asset.operating_cost_payee_id is not None:
-                            try:
-                                self.pay(
-                                    transport_asset.owner_id,
-                                    transport_asset.operating_cost_payee_id,
-                                    transport_asset.operating_cost_due,
-                                    reason=f"{transport_asset.id} passenger operating cost",
-                                )
-                                transport_asset.operating_cost_due = 0.0
-                            except (KeyError, ValueError):
-                                pass
-                        transport_asset.accrued_operating_cost = 0.0
+                        from .transport import settle_operating_cost
+
+                        settle_operating_cost(self, transport_asset.id, causes=(self.events[-1].id,))
                 if transport_asset.unavailable_reason is not None:
                     continue
             else:

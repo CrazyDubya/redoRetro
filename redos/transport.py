@@ -7,6 +7,8 @@ routes, and unloading/settlement occur only after physical arrival.
 
 from __future__ import annotations
 
+import copy
+
 from .enterprise import allocate_contract
 from .model import Movement, Shipment, TransportAsset, TransportFacility, TransportService, World, require_finite
 from .simulation import best_route, effective_route_hours, route_is_accessible, route_path
@@ -17,6 +19,82 @@ PACE_MULTIPLIERS = {
     "steady": 1.0,
     "urgent": 0.85,
 }
+
+
+def settle_operating_cost(world: World, asset_id: str, *, causes: tuple[str, ...] = ()) -> bool:
+    """Settle a carrier's outstanding operating-cost obligation.
+
+    Accrued cost is a real payable, not a bookkeeping counter that vanishes at
+    the end of a movement step.  If the owner cannot pay, the amount remains
+    due and the asset records an auditable unpaid obligation for a later
+    retry.  Assets without a configured payee retain the payable explicitly;
+    this is useful for standalone transport tests and avoids minting or
+    destroying money.
+    """
+    asset = world.transport_assets[asset_id]
+    require_finite(asset.operating_cost_due, f"{asset.id} operating cost due")
+    if asset.operating_cost_due <= 1e-9:
+        asset.operating_cost_due = 0.0
+        asset.accrued_operating_cost = 0.0
+        return True
+    if asset.operating_cost_payee_id is None:
+        world.record(
+            "transport_cost_payable",
+            f"{asset.id} has an operating cost payable",
+            actors=[asset.owner_id],
+            entities=[asset.id],
+            causes=causes,
+            data={"amount": asset.operating_cost_due, "reason": "no payee configured"},
+        )
+        return False
+    try:
+        payment = world.pay(
+            asset.owner_id,
+            asset.operating_cost_payee_id,
+            asset.operating_cost_due,
+            causes=causes,
+            reason=f"{asset.id} operating cost",
+        )
+    except (KeyError, ValueError) as exc:
+        world.record(
+            "transport_cost_unpaid",
+            f"{asset.id} could not settle its operating cost",
+            actors=[asset.owner_id],
+            entities=[asset.id, asset.operating_cost_payee_id],
+            causes=causes,
+            data={"amount": asset.operating_cost_due, "reason": str(exc)},
+        )
+        return False
+    amount = asset.operating_cost_due
+    asset.operating_cost_due = 0.0
+    asset.accrued_operating_cost = 0.0
+    world.record(
+        "transport_cost_settled",
+        f"{asset.id} operating cost settled",
+        actors=[asset.owner_id, asset.operating_cost_payee_id],
+        entities=[asset.id],
+        causes=(*causes, payment.id),
+        data={"amount": amount},
+    )
+    return True
+
+
+def advance_failed_cargo_recovery(world: World) -> None:
+    """Start physical recovery for failed cargo during ordinary world time."""
+    for shipment in tuple(world.shipments.values()):
+        if shipment.status != "failed" or shipment.carrier_id is None:
+            continue
+        asset = world.transport_assets.get(shipment.carrier_id)
+        contract = world.contracts.get(shipment.contract_id)
+        if asset is None or contract is None or asset.assignment_kind == "cargo_recovery":
+            continue
+        if world.quantity_held(asset.id, contract.good_type_id) + 1e-9 < contract.quantity:
+            continue
+        try:
+            resolve_failed_cargo(world, shipment.id)
+        except (KeyError, ValueError):
+            # The custody remains in place and the next world hour retries.
+            continue
 
 
 def add_asset(world: World, asset: TransportAsset) -> TransportAsset:
@@ -541,6 +619,22 @@ def dispatch_freight(
             if not route_is_accessible(world, route, mode=planned_asset.asset_type):
                 raise ValueError(f"carrier {planned_id} cannot use route {route.id}")
         route_offset += planned_legs[plan_index]
+    # Preflight the same physical stock rule used by allocation.  This keeps
+    # an invalid dispatch attempt from changing an open contract to failed
+    # merely because the caller discovered missing cargo too late.
+    seller = world.businesses[contract.seller_id]
+    reserved = sum(
+        other.quantity
+        for other in world.contracts.values()
+        if other.id != contract.id
+        and other.seller_id == seller.id
+        and other.good_type_id == contract.good_type_id
+        and other.status in {"allocated", "in_transit"}
+    )
+    available = world.quantity_held(seller.id, contract.good_type_id)
+    available = max(available, world.quantity_owned_at(seller.id, origin.place_id, contract.good_type_id))
+    if available - reserved + 1e-9 < contract.quantity:
+        raise ValueError("goods unavailable at dispatch")
     if contract.status == "open":
         allocate_contract(world, contract_id, source_place_id=origin.place_id)
     if contract.status != "allocated":
@@ -592,6 +686,7 @@ def dispatch_freight(
 
 def interrupt_freight(world: World, shipment_id: str, hours: float, *, reason: str, causes: tuple[str, ...] = ()) -> Shipment:
     """Pause a physical journey without releasing its cargo or carrier."""
+    require_finite(hours, "journey interruption hours")
     if hours <= 0:
         raise ValueError("journey interruption must last at least one hour")
     shipment = world.shipments[shipment_id]
@@ -713,18 +808,43 @@ def _try_relay_handoff(world: World, shipment: Shipment) -> bool:
     if quantity > next_asset.capacity + 1e-9:
         _fail(world, shipment, f"relay carrier {next_asset.id} capacity exceeded")
         return False
-    release_asset(world, current_asset.id)
-    next_asset.reserved_for_shipment_id = None
-    assign_asset(world, next_asset.id, shipment.id, kind="freight")
-    world.transfer_goods(
-        contract.good_type_id,
-        contract.quantity,
-        from_holder=current_asset.id,
-        to_holder=next_asset.id,
-        to_owner=contract.seller_id,
-        causes=contract.causal_event_ids[-1:],
-        reason=f"{shipment.id} cargo handed off at {current_asset.location_id}",
-    )
+    snapshot = {
+        "current": (current_asset.assigned_shipment_id, current_asset.assignment_kind, current_asset.available, current_asset.unavailable_reason, current_asset.cargo_clearance_pending),
+        "next": (next_asset.assigned_shipment_id, next_asset.assignment_kind, next_asset.available, next_asset.unavailable_reason, next_asset.reserved_for_shipment_id, next_asset.cargo_clearance_pending),
+        "shipment": (shipment.carrier_id, shipment.carrier_plan_index, shipment.status),
+        "lots": copy.deepcopy(world.lots),
+        "lot_number": world._lot_number,
+        "lot_original": copy.deepcopy(world._lot_original_quantity),
+        "lot_creation": copy.deepcopy(world._lot_counts_as_creation),
+        "events": len(world.events),
+        "event_number": world._event_number,
+        "causes": list(contract.causal_event_ids),
+    }
+    try:
+        release_asset(world, current_asset.id)
+        next_asset.reserved_for_shipment_id = None
+        assign_asset(world, next_asset.id, shipment.id, kind="freight")
+        world.transfer_goods(
+            contract.good_type_id,
+            contract.quantity,
+            from_holder=current_asset.id,
+            to_holder=next_asset.id,
+            to_owner=contract.seller_id,
+            causes=contract.causal_event_ids[-1:],
+            reason=f"{shipment.id} cargo handed off at {current_asset.location_id}",
+        )
+    except Exception:
+        current_asset.assigned_shipment_id, current_asset.assignment_kind, current_asset.available, current_asset.unavailable_reason, current_asset.cargo_clearance_pending = snapshot["current"]
+        next_asset.assigned_shipment_id, next_asset.assignment_kind, next_asset.available, next_asset.unavailable_reason, next_asset.reserved_for_shipment_id, next_asset.cargo_clearance_pending = snapshot["next"]
+        shipment.carrier_id, shipment.carrier_plan_index, shipment.status = snapshot["shipment"]
+        world.lots = snapshot["lots"]
+        world._lot_number = snapshot["lot_number"]
+        world._lot_original_quantity = snapshot["lot_original"]
+        world._lot_counts_as_creation = snapshot["lot_creation"]
+        del world.events[snapshot["events"]:]
+        world._event_number = snapshot["event_number"]
+        contract.causal_event_ids[:] = snapshot["causes"]
+        raise
     # Releasing the old carrier while it still held cargo marks it as awaiting
     # clearance.  The physical handoff has now completed, so it is safe to
     # make that carrier available for another assignment.
@@ -968,19 +1088,7 @@ def _advance_asset_reposition(world: World, asset: TransportAsset, hours: float)
                 entities=[asset.id, route.id],
                 data={"amount": cost, "outstanding": asset.operating_cost_due},
             )
-            if asset.operating_cost_payee_id is not None:
-                try:
-                    world.pay(
-                        asset.owner_id,
-                        asset.operating_cost_payee_id,
-                        asset.operating_cost_due,
-                        causes=[cost_event.id],
-                        reason=f"{asset.id} repositioning cost",
-                    )
-                    asset.operating_cost_due = 0.0
-                except (KeyError, ValueError):
-                    pass
-            asset.accrued_operating_cost = 0.0
+            settle_operating_cost(world, asset.id, causes=(cost_event.id,))
         asset.return_elapsed_hours += step
         remaining -= step
         if asset.return_elapsed_hours + 1e-9 >= duration:
@@ -1079,7 +1187,7 @@ def _settle_arrival(world: World, shipment: Shipment) -> None:
         f"{contract.id} settled after physical delivery",
         actors=[seller.id, buyer.id],
         entities=[contract.id],
-        causes=[payment.id],
+        causes=[payment.id, delivered.id],
     )
     contract.causal_event_ids.append(settled.id)
     shipment.status = "delivered"
@@ -1275,18 +1383,7 @@ def _advance_freight_step(world: World, hours: float) -> list[str]:
                 entities=[asset.id, shipment.id],
                 data={"amount": asset.accrued_operating_cost, "outstanding": asset.operating_cost_due},
             )
-            if asset.operating_cost_payee_id is not None and asset.operating_cost_due > 0:
-                try:
-                    world.pay(
-                        asset.owner_id,
-                        asset.operating_cost_payee_id,
-                        asset.operating_cost_due,
-                        reason=f"{asset.id} operating cost",
-                    )
-                    asset.operating_cost_due = 0.0
-                except (KeyError, ValueError):
-                    pass
-            asset.accrued_operating_cost = 0.0
+            settle_operating_cost(world, asset.id)
     _admit_arrivals(world)
     return settled
 

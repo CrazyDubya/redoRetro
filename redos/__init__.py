@@ -28,10 +28,11 @@ from .rules import Rule, RuleBook
 from .market import accept_market_delivery
 from .merchant import MerchantRouteLeg, evaluate_merchant_route
 from .simulation import apply_transport_weather, best_route, effective_route_hours, set_route_condition
-from .harbor import build_harbor_world, harbor_audit
+from .harbor import build_harbor_world, harbor_audit, run_harbor_demonstration
 from .equestrian import care_for_horse, ride
 from .enterprise import invest_in_capacity
 from .bank import (
+    advance_finance,
     accrue_deposit_interest,
     accrue_loan_interest,
     balance_sheet,
@@ -42,10 +43,10 @@ from .bank import (
     repay_loan,
     withdraw,
 )
-from .insurance import approve_claim, file_claim, insurer_exposure, issue_policy, settle_claim
+from .insurance import advance_claims, approve_claim, file_claim, insurer_exposure, issue_policy, record_loss, settle_claim
 from .insider import buy_information, execute_trade, issue_security, portfolio_value, publish_wire_event
 from .ocean import OceanTradeQuote, book_ocean_trade, quote_ocean_trade, select_ocean_trade
-from .realestate import add_property, buy_property, collect_rent, lease_property, update_property_market
+from .realestate import add_property, advance_rents, buy_property, collect_rent, lease_property, update_property_market
 from .derby import add_horse, race_horses, train_horse
 from .transport import (
     add_asset,
@@ -65,6 +66,7 @@ from .transport import (
     replenish_asset,
     repair_asset,
     resolve_failed_cargo,
+    settle_operating_cost,
 )
 from .vertical import SliceState, build_integrated_world, run_autonomous_days
 
@@ -102,6 +104,7 @@ __all__ = [
     "set_route_condition",
     "build_harbor_world",
     "harbor_audit",
+    "run_harbor_demonstration",
     "care_for_horse",
     "ride",
     "add_horse",
@@ -109,6 +112,7 @@ __all__ = [
     "train_horse",
     "invest_in_capacity",
     "open_account",
+    "advance_finance",
     "deposit",
     "withdraw",
     "accrue_deposit_interest",
@@ -118,6 +122,8 @@ __all__ = [
     "charge_account_fee",
     "balance_sheet",
     "issue_policy",
+    "record_loss",
+    "advance_claims",
     "file_claim",
     "approve_claim",
     "settle_claim",
@@ -134,6 +140,7 @@ __all__ = [
     "add_property",
     "buy_property",
     "collect_rent",
+    "advance_rents",
     "lease_property",
     "update_property_market",
     "SliceState",
@@ -156,4 +163,5 @@ __all__ = [
     "replenish_asset",
     "repair_asset",
     "resolve_failed_cargo",
+    "settle_operating_cost",
 ]

@@ -108,7 +108,21 @@ def validate_world(world: World) -> list[str]:
         if not all(math.isfinite(value) for value in (property.market_value, property.monthly_rent, property.mortgage_balance)):
             errors.append(f"property {property.id} has non-finite values")
     for asset in world.transport_assets.values():
-        if not all(math.isfinite(value) for value in (asset.capacity, asset.condition, asset.readiness, asset.fuel, asset.fuel_capacity, asset.operating_cost_per_hour, asset.operating_cost_due)):
+        values = (
+            asset.capacity,
+            asset.condition,
+            asset.readiness,
+            asset.fuel,
+            asset.fuel_capacity,
+            asset.fuel_burn_per_hour,
+            asset.operating_cost_per_hour,
+            asset.accrued_operating_cost,
+            asset.operating_cost_due,
+            *asset.supplies.values(),
+            *asset.supply_capacity.values(),
+            *asset.supply_burn_per_hour.values(),
+        )
+        if not all(math.isfinite(value) for value in values):
             errors.append(f"transport asset {asset.id} has non-finite values")
     errors.extend(market_balance_errors(world))
     return errors

@@ -51,7 +51,11 @@ def buy_property(world: World, property_id: str, buyer_id: str, seller_id: str, 
     if amount <= 0:
         raise ValueError("property price must be positive")
     payment = world.pay(buyer_id, seller_id, amount, reason=f"{property.id} purchase")
+    former_tenant = property.occupied_by_id
     property.owner_id = buyer_id
+    if former_tenant == buyer_id:
+        property.occupied_by_id = None
+        property.last_rent_at = None
     world.record(
         "property_transferred",
         f"{buyer_id} bought {property.id}",
@@ -60,6 +64,14 @@ def buy_property(world: World, property_id: str, buyer_id: str, seller_id: str, 
         causes=(payment.id,),
         data={"price": amount},
     )
+    if former_tenant == buyer_id:
+        world.record(
+            "lease_terminated_by_sale",
+            f"{property.id} lease ended when ownership changed",
+            actors=[former_tenant, buyer_id, seller_id],
+            entities=[property.id],
+            causes=(payment.id,),
+        )
     return amount
 
 
@@ -98,3 +110,32 @@ def collect_rent(world: World, property_id: str) -> float:
     )
     property.last_rent_at = world.now
     return property.monthly_rent
+
+
+def advance_rents(world: World) -> None:
+    """Collect or record each due rental obligation at the monthly boundary."""
+    attempted = world.runtime.setdefault("_rent_attempts", set())
+    for property in world.properties.values():
+        if property.occupied_by_id is None or property.monthly_rent <= 0:
+            continue
+        if property.last_rent_at is not None and world.now < property.last_rent_at + timedelta(days=30):
+            continue
+        period = (property.id, world.now.year, world.now.month)
+        if period in attempted:
+            continue
+        attempted.add(period)
+        try:
+            collect_rent(world, property.id)
+        except (KeyError, ValueError) as exc:
+            occupant = world.actors.get(property.occupied_by_id) or world.businesses.get(property.occupied_by_id) or world.households.get(property.occupied_by_id)
+            if occupant is None:
+                continue
+            occupant.debt += property.monthly_rent
+            property.last_rent_at = world.now
+            world.record(
+                "rent_unpaid",
+                f"{property.occupied_by_id} could not pay rent for {property.id}",
+                actors=[property.occupied_by_id, property.owner_id],
+                entities=[property.id],
+                data={"amount": property.monthly_rent, "reason": str(exc)},
+            )

@@ -282,7 +282,7 @@ def advance_shipments(world: World, hours: float = 1.0) -> list[str]:
         delivered_event = world.record("contract_delivered", f"{contract.id} delivered physical goods", actors=[buyer.id, seller.id], entities=[contract.id, shipment.id], causes=[payment.id])
         contract.causal_event_ids.append(delivered_event.id)
         contract.status = "settled"
-        settled = world.record("contract_settled", f"{contract.id} settled", actors=[seller.id, buyer.id], entities=[contract.id], causes=[payment.id])
+        settled = world.record("contract_settled", f"{contract.id} settled", actors=[seller.id, buyer.id], entities=[contract.id], causes=[payment.id, delivered_event.id])
         contract.causal_event_ids.append(settled.id)
         delivered.append(contract.id)
     return delivered
@@ -296,11 +296,12 @@ def settle_contract(world: World, contract_id: str) -> None:
     seller = world.businesses[contract.seller_id]
     payment = world.pay(buyer.id, seller.id, contract.quantity * contract.unit_price, causes=contract.causal_event_ids[-1:], reason=f"{contract.id} settlement")
     contract.status = "settled"
-    settled = world.record("contract_settled", f"{contract.id} settled", actors=[seller.id, buyer.id], entities=[contract.id], causes=[payment.id])
+    settled = world.record("contract_settled", f"{contract.id} settled", actors=[seller.id, buyer.id], entities=[contract.id], causes=[payment.id, *contract.causal_event_ids[-1:]])
     contract.causal_event_ids.append(settled.id)
 
 
 def borrow(world: World, borrower_id: str, lender_id: str, amount: float) -> None:
+    require_finite(amount, "loan amount")
     if amount <= 0:
         raise ValueError("loan must be positive")
     world.pay(lender_id, borrower_id, amount, reason="business loan")
@@ -309,6 +310,7 @@ def borrow(world: World, borrower_id: str, lender_id: str, amount: float) -> Non
 
 
 def repay(world: World, borrower_id: str, lender_id: str, amount: float) -> None:
+    require_finite(amount, "loan repayment")
     borrower = world.businesses[borrower_id]
     amount = min(amount, borrower.debt)
     if amount <= 0:
@@ -319,6 +321,7 @@ def repay(world: World, borrower_id: str, lender_id: str, amount: float) -> None
 
 
 def invest_in_research(world: World, business_id: str, amount: float) -> None:
+    require_finite(amount, "research investment")
     if amount <= 0:
         raise ValueError("research investment must be positive")
     business = world.businesses[business_id]
@@ -331,6 +334,8 @@ def invest_in_research(world: World, business_id: str, amount: float) -> None:
 
 def invest_in_capacity(world: World, business_id: str, recipe_id: str, amount: float, capacity_gain: float = 1.0) -> float:
     """Convert a business cash outlay into usable recipe capacity."""
+    require_finite(amount, "capacity investment")
+    require_finite(capacity_gain, "capacity gain")
     if amount <= 0 or capacity_gain <= 0:
         raise ValueError("capacity investment and gain must be positive")
     business = world.businesses[business_id]
@@ -351,6 +356,8 @@ def invest_in_capacity(world: World, business_id: str, recipe_id: str, amount: f
 
 def mule_bid(world: World, buyer_id: str, seller_id: str, good_type_id: str, quantity: float, amount: float) -> None:
     """A scarcity bid: a buyer pays a seller for an actual lot."""
+    require_finite(quantity, "scarcity bid quantity")
+    require_finite(amount, "scarcity bid amount")
     if amount <= 0:
         raise ValueError("bid must be positive")
     if world.quantity_held(seller_id, good_type_id) + 1e-9 < quantity:

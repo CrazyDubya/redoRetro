@@ -335,3 +335,38 @@ def balance_sheet(world: World, bank_id: str) -> dict[str, float]:
     loans = sum(loan.outstanding_principal for loan in world.bank_loans.values() if loan.bank_id == bank_id and loan.status == "open")
     accrued_interest = sum(loan.accrued_interest for loan in world.bank_loans.values() if loan.bank_id == bank_id and loan.status == "open")
     return {"cash": bank.cash, "deposits": deposits, "loans": loans, "accrued_loan_interest": accrued_interest}
+
+
+def advance_finance(world: World) -> None:
+    """Advance live banking obligations on the canonical world clock."""
+    for account in world.bank_accounts.values():
+        if account.status == "open":
+            accrue_deposit_interest(world, account.id)
+    for loan in world.bank_loans.values():
+        if loan.status == "open":
+            accrue_loan_interest(world, loan.id)
+    current_date = world.now.date().isoformat()
+    previous_date = world.runtime.get("_finance_calendar_date")
+    if previous_date is None:
+        world.runtime["_finance_calendar_date"] = current_date
+        return
+    if previous_date == current_date:
+        return
+    # The account field represents the monthly service charge used by the
+    # donor's demand accounts, so a calendar-month boundary is the billing
+    # boundary rather than every simulation hour.
+    if world.now.day == 1:
+        for account in world.bank_accounts.values():
+            if account.status != "open" or account.service_charge <= 0:
+                continue
+            try:
+                charge_account_fee(world, account.id)
+            except (KeyError, ValueError) as exc:
+                world.record(
+                    "bank_fee_unpaid",
+                    f"service charge for {account.id} remains unpaid",
+                    actors=[account.bank_id, account.customer_id],
+                    entities=[account.id],
+                    data={"amount": account.service_charge, "reason": str(exc)},
+                )
+    world.runtime["_finance_calendar_date"] = current_date
