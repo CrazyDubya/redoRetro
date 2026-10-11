@@ -137,22 +137,31 @@ def _money_holder(world: World, holder_id: str):
     return world.actors.get(holder_id) or world.businesses.get(holder_id) or world.households.get(holder_id)
 
 
-def _validate_rent_payment_plan(world: World, debtor_id: str, payments: list[tuple[str, float]]) -> None:
+def _validate_rent_payment_plan(world: World, debtor_id: str, payments: list[tuple[str, float]]) -> list[tuple[str, float]]:
     debtor = _money_holder(world, debtor_id)
     if debtor is None:
         raise KeyError(debtor_id)
     debtor_field = "money" if debtor_id in world.actors else "cash"
     debtor_balance = getattr(debtor, debtor_field)
-    total = sum(amount for _creditor_id, amount in payments)
-    if not math.isfinite(debtor_balance) or debtor_balance + 1e-9 < total:
-        raise ValueError(f"{debtor_id} cannot pay rent obligations")
+    normalized: dict[str, float] = {}
     for creditor_id, amount in payments:
+        if not math.isfinite(amount) or amount <= 0:
+            raise ValueError(f"invalid rent amount for {creditor_id}")
+        normalized[creditor_id] = normalized.get(creditor_id, 0.0) + amount
+    total = sum(normalized.values())
+    if not math.isfinite(total) or not math.isfinite(debtor_balance) or debtor_balance + 1e-9 < total:
+        raise ValueError(f"{debtor_id} cannot pay rent obligations")
+    if not math.isfinite(debtor_balance - total):
+        raise ValueError(f"{debtor_id} payment plan is non-finite")
+    for creditor_id, amount in normalized.items():
         creditor = _money_holder(world, creditor_id)
         if creditor is None or creditor_id == debtor_id:
             raise KeyError(creditor_id)
         creditor_field = "money" if creditor_id in world.actors else "cash"
-        if not math.isfinite(getattr(creditor, creditor_field)) or not math.isfinite(amount):
+        creditor_balance = getattr(creditor, creditor_field)
+        if not math.isfinite(creditor_balance) or not math.isfinite(creditor_balance + amount):
             raise ValueError(f"invalid rent creditor {creditor_id}")
+    return list(normalized.items())
 
 
 def _settle_open_arrears(world: World, obligations: dict) -> None:
@@ -171,7 +180,7 @@ def _settle_open_arrears(world: World, obligations: dict) -> None:
             by_creditor[obligation["landlord_id"]] = by_creditor.get(obligation["landlord_id"], 0.0) + float(obligation["amount"])
         payments = list(by_creditor.items())
         try:
-            _validate_rent_payment_plan(world, debtor_id, payments)
+            payments = _validate_rent_payment_plan(world, debtor_id, payments)
         except (KeyError, ValueError):
             continue
         payment_events = {

@@ -280,12 +280,121 @@ def _asset_is_stationary(world: World, asset_id: str, *, at_place_id: str | None
             or (
                 service.status in {"blocked", "waiting_asset"}
                 and service.route_index < len(service.route_ids)
+                and (
+                    service.route_index > 0
+                    or service.elapsed_hours > 1e-9
+                    or service.journey_elapsed_hours > 1e-9
+                )
             )
         )
         for service in world.transport_services.values()
     ):
         return False
     return at_place_id is None or asset.location_id == at_place_id
+
+
+def _supply_transaction_snapshot(world: World) -> dict:
+    """Capture the small canonical state touched by a physical supply sale."""
+    balances = {}
+    for collection, field in (
+        (world.actors, "money"),
+        (world.businesses, "cash"),
+        (world.households, "cash"),
+    ):
+        for holder_id, holder in collection.items():
+            balances[(holder_id, field)] = getattr(holder, field)
+    return {
+        "lots": copy.deepcopy(world.lots),
+        "lot_number": world._lot_number,
+        "lot_original": copy.deepcopy(world._lot_original_quantity),
+        "lot_creation": copy.deepcopy(world._lot_counts_as_creation),
+        "balances": balances,
+        "market_balances": {
+            market_id: copy.deepcopy(market.balances)
+            for market_id, market in world.markets.items()
+        },
+        "events": len(world.events),
+        "event_number": world._event_number,
+    }
+
+
+def _restore_supply_transaction(world: World, snapshot: dict) -> None:
+    world.lots = snapshot["lots"]
+    world._lot_number = snapshot["lot_number"]
+    world._lot_original_quantity = snapshot["lot_original"]
+    world._lot_counts_as_creation = snapshot["lot_creation"]
+    for (holder_id, field), balance in snapshot["balances"].items():
+        holder = world.actors.get(holder_id) or world.businesses.get(holder_id) or world.households.get(holder_id)
+        if holder is not None:
+            setattr(holder, field, balance)
+    for market_id, balances in snapshot["market_balances"].items():
+        if market_id in world.markets:
+            world.markets[market_id].balances = balances
+    del world.events[snapshot["events"]:]
+    world._event_number = snapshot["event_number"]
+
+
+def _commit_inventory_consumption(
+    world: World,
+    *,
+    payer_id: str,
+    seller_id: str,
+    payee_id: str,
+    total: float,
+    source_holder_id: str,
+    place_id: str,
+    good_type_id: str,
+    quantity: float,
+    target_holder_id: str,
+    causes: tuple[str, ...],
+    transfer_reason: str,
+    consumption_reason: str,
+) -> tuple[object | None, object, list[str], object]:
+    """Atomically pay for, transfer and consume one physical supply bundle."""
+    candidates = world.available_owned_lots_at(
+        seller_id,
+        place_id,
+        good_type_id,
+        from_holder_id=source_holder_id,
+    )
+    if sum(lot.quantity for lot in candidates) + 1e-9 < quantity:
+        raise ValueError("requested supply is encumbered or unavailable")
+
+    snapshot = _supply_transaction_snapshot(world)
+    try:
+        payment = None
+        if total > 1e-9 and payer_id != payee_id:
+            payment = world.pay(
+                payer_id,
+                payee_id,
+                total,
+                causes=causes,
+                reason=f"{target_holder_id} purchased physical supply",
+            )
+        payment_causes = (*causes, payment.id) if payment is not None else causes
+        world.transfer_owned_goods_at(
+            seller_id,
+            place_id,
+            good_type_id,
+            quantity,
+            from_holder_id=source_holder_id,
+            to_holder=target_holder_id,
+            causes=payment_causes,
+            reason=transfer_reason,
+        )
+        transfer_event = world.events[-1]
+        consumed = world.consume_goods(
+            target_holder_id,
+            good_type_id,
+            quantity,
+            causes=(transfer_event.id,),
+            reason=consumption_reason,
+        )
+        consumption_event = world.events[-1]
+        return payment, transfer_event, consumed, consumption_event
+    except Exception:
+        _restore_supply_transaction(world, snapshot)
+        raise
 
 
 def _begin_service_leg(world: World, service: TransportService) -> bool:
@@ -631,7 +740,7 @@ def supply_asset_from_inventory(
     added = min(quantity, room)
     if added <= 1e-9:
         return 0.0
-    source_lots = world.lots_held_by(source_holder_id, good_type_id)
+    source_lots = world.available_lots_at(source_holder_id, asset.location_id, good_type_id)
     owner_quantities: dict[str, float] = {}
     for lot in source_lots:
         owner_quantities[lot.owner_id] = owner_quantities.get(lot.owner_id, 0.0) + lot.quantity
@@ -655,29 +764,22 @@ def supply_asset_from_inventory(
         payer_obj = world.actors.get(payer) or world.businesses.get(payer) or world.households.get(payer)
         if payer_obj is None or getattr(payer_obj, "cash", getattr(payer_obj, "money", 0.0)) < total - 1e-9:
             raise ValueError(f"{payer} cannot afford {asset_id} {supply}")
-    payment = None
-    if total > 1e-9 and payer != payee:
-        payment = world.pay(payer, payee, total, causes=causes, reason=f"{asset.id} purchased {supply}")
+    payment, transfer_event, consumed, consumption_event = _commit_inventory_consumption(
+        world,
+        payer_id=payer,
+        seller_id=seller_id,
+        payee_id=payee,
+        total=total,
+        source_holder_id=source_holder_id,
+        place_id=asset.location_id,
+        good_type_id=good_type_id,
+        quantity=added,
+        target_holder_id=asset.id,
+        causes=tuple(causes),
+        transfer_reason=f"{asset.id} received physical {supply} from {source_holder_id}",
+        consumption_reason=f"{asset.id} consumed purchased {supply}",
+    )
     payment_causes = (*causes, payment.id) if payment is not None else tuple(causes)
-    transferred = world.transfer_owned_goods_at(
-        seller_id,
-        asset.location_id,
-        good_type_id,
-        added,
-        from_holder_id=source_holder_id,
-        to_holder=asset.id,
-        causes=payment_causes,
-        reason=f"{asset.id} received physical {supply} from {source_holder_id}",
-    )
-    transfer_event = world.events[-1]
-    consumed = world.consume_goods(
-        asset.id,
-        good_type_id,
-        added,
-        causes=(transfer_event.id,),
-        reason=f"{asset.id} consumed purchased {supply}",
-    )
-    consumption_event = world.events[-1]
     if supply == "fuel":
         asset.fuel += added
     else:
@@ -742,7 +844,7 @@ def service_asset_from_inventory(
         raise ValueError("maintenance worker has no remaining service capacity")
     if world.location_of(source_holder_id) != asset.location_id:
         raise ValueError("maintenance source is not co-located with the asset")
-    source_lots = world.lots_held_by(source_holder_id, parts_good_type_id)
+    source_lots = world.available_lots_at(source_holder_id, asset.location_id, parts_good_type_id)
     owner_quantities: dict[str, float] = {}
     for lot in source_lots:
         owner_quantities[lot.owner_id] = owner_quantities.get(lot.owner_id, 0.0) + lot.quantity
@@ -766,29 +868,22 @@ def service_asset_from_inventory(
         payer_obj = world.actors.get(payer) or world.businesses.get(payer) or world.households.get(payer)
         if payer_obj is None or getattr(payer_obj, "cash", getattr(payer_obj, "money", 0.0)) < total - 1e-9:
             raise ValueError(f"{payer} cannot afford maintenance for {asset_id}")
-    payment = None
-    if total > 1e-9 and payer != payee:
-        payment = world.pay(payer, payee, total, causes=causes, reason=f"{asset.id} maintenance")
+    payment, transfer_event, consumed, consumption_event = _commit_inventory_consumption(
+        world,
+        payer_id=payer,
+        seller_id=seller_id,
+        payee_id=payee,
+        total=total,
+        source_holder_id=source_holder_id,
+        place_id=asset.location_id,
+        good_type_id=parts_good_type_id,
+        quantity=parts_quantity,
+        target_holder_id=asset.id,
+        causes=tuple(causes),
+        transfer_reason=f"{asset.id} received maintenance parts",
+        consumption_reason=f"{asset.id} consumed maintenance parts",
+    )
     payment_causes = (*causes, payment.id) if payment is not None else tuple(causes)
-    transferred = world.transfer_owned_goods_at(
-        seller_id,
-        asset.location_id,
-        parts_good_type_id,
-        parts_quantity,
-        from_holder_id=source_holder_id,
-        to_holder=asset.id,
-        causes=payment_causes,
-        reason=f"{asset.id} received maintenance parts",
-    )
-    transfer_event = world.events[-1]
-    consumed = world.consume_goods(
-        asset.id,
-        parts_good_type_id,
-        parts_quantity,
-        causes=(transfer_event.id,),
-        reason=f"{asset.id} consumed maintenance parts",
-    )
-    consumption_event = world.events[-1]
     before = asset.condition
     asset.condition = min(1.0, asset.condition + repair_amount)
     if asset.condition > 0 and asset.readiness > 0 and asset.assigned_shipment_id is None:

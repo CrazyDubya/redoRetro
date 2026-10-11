@@ -153,35 +153,65 @@ class PhysicalAssetServiceTests(unittest.TestCase):
                 worker_id=worker.id,
             )
 
-    def test_resource_stalled_service_is_not_a_station(self):
+    def test_zero_progress_resource_stall_can_refuel_and_resume(self):
         world, _owner, worker = self._world()
         asset = world.transport_assets["service-cart"]
         asset.fuel = 10.0
         asset.supplies["stores"] = 0.0
-        asset.supply_capacity["stores"] = 2.0
+        asset.supply_capacity["stores"] = 48.0
         asset.supply_burn_per_hour["stores"] = 1.0
+        world.add(GoodType("stores", "Travel stores", 1.0))
+        world.create_lot("stores", 48.0, holder_id="service-yard", owner_id="service-yard", provenance=("travel stores",))
         add_service(world, TransportService("stalled-service", "service-cart", ("shop", "north")))
         advance_services(world, 0.5)
         service = world.transport_services["stalled-service"]
         self.assertEqual(service.status, "waiting_asset")
         self.assertTrue(service.route_ids)
+        self.assertEqual(service.elapsed_hours, 0.0)
+        self.assertEqual(service.journey_elapsed_hours, 0.0)
+        self.assertEqual(
+            supply_asset_from_inventory(
+                world,
+                asset.id,
+                "stores",
+                48.0,
+                source_holder_id="service-yard",
+                good_type_id="stores",
+                unit_price=1.0,
+                payee_id="service-yard",
+            ),
+            48.0,
+        )
+        advance_services(world, 48.0)
+        self.assertEqual(asset.location_id, "north")
+        self.assertEqual(service.status, "dwelling")
+        self.assertEqual(service.journey_elapsed_hours, 48.0)
+
+    def test_mid_route_resource_stall_cannot_be_serviced_at_last_waypoint(self):
+        world, _owner, _worker = self._world()
+        asset = world.transport_assets["service-cart"]
+        asset.fuel = 10.0
+        asset.supplies["stores"] = 0.5
+        asset.supply_capacity["stores"] = 1.0
+        asset.supply_burn_per_hour["stores"] = 1.0
+        world.add(GoodType("stores", "Travel stores", 1.0))
+        world.create_lot("stores", 2.0, holder_id="service-yard", owner_id="service-yard", provenance=("travel stores",))
+        add_service(world, TransportService("mid-route-stall", "service-cart", ("shop", "north")))
+        advance_services(world, 0.5)
+        service = world.transport_services["mid-route-stall"]
+        self.assertEqual(service.status, "in_transit")
+        self.assertGreater(service.elapsed_hours, 0.0)
+        advance_services(world, 1.0)
+        self.assertEqual(service.status, "waiting_asset")
+        self.assertGreater(service.elapsed_hours, 0.0)
         with self.assertRaises(ValueError):
             supply_asset_from_inventory(
                 world,
                 asset.id,
-                "fuel",
+                "stores",
                 1.0,
                 source_holder_id="service-yard",
-                good_type_id="fuel",
-            )
-        with self.assertRaises(ValueError):
-            service_asset_from_inventory(
-                world,
-                asset.id,
-                source_holder_id="service-yard",
-                parts_good_type_id="maintenance-parts",
-                parts_quantity=1.0,
-                worker_id=worker.id,
+                good_type_id="stores",
             )
 
     def test_duplicate_fuel_requirements_are_aggregated_before_consumption(self):
@@ -248,6 +278,75 @@ class PhysicalAssetServiceTests(unittest.TestCase):
             ),
             1.0,
         )
+
+    def test_encumbered_source_cargo_cannot_become_fuel_or_be_paid_for(self):
+        world, owner, _worker = self._world()
+        source = TransportAsset(
+            "encumbered-source",
+            "Encumbered Source",
+            "cart",
+            "shop",
+            "service-yard",
+            capacity=2,
+            assigned_shipment_id="active-shipment",
+            assignment_kind="freight",
+            available=False,
+        )
+        add_asset(world, source)
+        world.create_lot("fuel", 2.0, holder_id=source.id, owner_id="service-yard", provenance=("committed fuel",))
+        before_cash = owner.cash
+        before_events = len(world.events)
+        with self.assertRaises(ValueError):
+            supply_asset_from_inventory(
+                world,
+                "service-cart",
+                "fuel",
+                1.0,
+                source_holder_id=source.id,
+                good_type_id="fuel",
+                unit_price=2.0,
+                payee_id="service-yard",
+            )
+        self.assertEqual(owner.cash, before_cash)
+        self.assertEqual(world.transport_assets["service-cart"].fuel, 0.0)
+        self.assertEqual(world.quantity_held(source.id, "fuel"), 2.0)
+        self.assertEqual(len(world.events), before_events)
+
+    def test_encumbered_source_parts_cannot_be_paid_for_or_restore_condition(self):
+        world, owner, worker = self._world()
+        source = TransportAsset(
+            "encumbered-parts-source",
+            "Encumbered Parts Source",
+            "cart",
+            "shop",
+            "service-yard",
+            capacity=2,
+            assigned_shipment_id="active-shipment",
+            assignment_kind="freight",
+            available=False,
+        )
+        add_asset(world, source)
+        world.create_lot("maintenance-parts", 2.0, holder_id=source.id, owner_id="service-yard", provenance=("committed parts",))
+        asset = world.transport_assets["service-cart"]
+        before_cash = owner.cash
+        before_condition = asset.condition
+        before_events = len(world.events)
+        with self.assertRaises(ValueError):
+            service_asset_from_inventory(
+                world,
+                asset.id,
+                source_holder_id=source.id,
+                parts_good_type_id="maintenance-parts",
+                parts_quantity=1.0,
+                worker_id=worker.id,
+                unit_price=5.0,
+                payee_id="service-yard",
+            )
+        self.assertEqual(owner.cash, before_cash)
+        self.assertEqual(asset.condition, before_condition)
+        self.assertEqual(world.quantity_held(source.id, "maintenance-parts"), 2.0)
+        self.assertEqual(world.runtime.get("_asset_service_worker_hours", {}), {})
+        self.assertEqual(len(world.events), before_events)
 
     def test_resource_bundle_preflight_does_not_burn_fuel_without_stores(self):
         world, owner, _worker = self._world()

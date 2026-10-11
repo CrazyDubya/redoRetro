@@ -697,6 +697,33 @@ class World:
             and lot.quantity > 0
         ]
 
+    def available_lots_at(self, holder_id: str, place_id: str, good_type_id: str | None = None) -> list[InventoryLot]:
+        """Return physically present, unencumbered lots held at a place."""
+        return [
+            lot
+            for lot in self.lots_held_by(holder_id, good_type_id)
+            if self._lot_is_available_at(lot, place_id)
+        ]
+
+    def available_owned_lots_at(
+        self,
+        owner_id: str,
+        place_id: str,
+        good_type_id: str,
+        *,
+        from_holder_id: str | None = None,
+    ) -> list[InventoryLot]:
+        """Return the exact lots eligible for a physical owned transfer."""
+        return [
+            lot
+            for lot in self.lots.values()
+            if lot.good_type_id == good_type_id
+            and lot.owner_id == owner_id
+            and lot.quantity > 0
+            and (from_holder_id is None or lot.holder_id == from_holder_id)
+            and self._lot_is_available_at(lot, place_id)
+        ]
+
     def quantity_held(self, holder_id: str, good_type_id: str) -> float:
         return sum(lot.quantity for lot in self.lots_held_by(holder_id, good_type_id))
 
@@ -733,11 +760,10 @@ class World:
         if place_id not in self.places:
             raise KeyError(place_id)
         total = 0.0
-        for lot in self.lots.values():
-            if lot.good_type_id != good_type_id or lot.owner_id != owner_id or lot.quantity <= 0:
-                continue
-            if self._lot_is_available_at(lot, place_id):
-                total += lot.quantity
+        total = sum(
+            lot.quantity
+            for lot in self.available_owned_lots_at(owner_id, place_id, good_type_id)
+        )
         return total
 
     def transfer_owned_goods_at(
@@ -759,13 +785,14 @@ class World:
         if not self._holder_exists(to_holder):
             raise KeyError(to_holder)
         candidates = [
-            lot for lot in self.lots.values()
-            if lot.good_type_id == good_type_id
-            and lot.owner_id == owner_id
-            and lot.quantity > 0
-            and lot.holder_id != to_holder
-            and (from_holder_id is None or lot.holder_id == from_holder_id)
-            and self._lot_is_available_at(lot, place_id)
+            lot
+            for lot in self.available_owned_lots_at(
+                owner_id,
+                place_id,
+                good_type_id,
+                from_holder_id=from_holder_id,
+            )
+            if lot.holder_id != to_holder
         ]
         if sum(lot.quantity for lot in candidates) + 1e-9 < quantity:
             raise ValueError(f"{owner_id} does not own enough {good_type_id} at {place_id}")

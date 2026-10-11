@@ -1,10 +1,11 @@
 import unittest
 import math
+import sys
 from datetime import timedelta
 
 from redos.bootstrap import build_tiny_world
 from redos.model import Household, Property
-from redos.realestate import add_property, advance_rents, buy_property, collect_rent, lease_property, update_property_market
+from redos.realestate import _settle_open_arrears, add_property, advance_rents, buy_property, collect_rent, lease_property, update_property_market
 
 
 class BaronTests(unittest.TestCase):
@@ -129,6 +130,42 @@ class BaronTests(unittest.TestCase):
         self.assertEqual(owner.cash, before_owner + 10.0)
         self.assertEqual(former_tenant.debt, 0.0)
         self.assertTrue(all(obligation["status"] == "settled" for obligation in world.runtime["_rent_obligations"].values() if obligation["tenant_id"] == former_tenant.id))
+
+    def test_multi_creditor_rent_plan_rejects_non_finite_projection_atomically(self):
+        world, property, owner, _buyer = self._world()
+        tenant = world.households["tenant-household"]
+        landlord_b = world.businesses["tavern-business"]
+        landlord_b.cash = sys.float_info.max
+        amount = sys.float_info.max / 2
+        obligations = {
+            "arrears-a": {
+                "property_id": property.id,
+                "tenant_id": tenant.id,
+                "landlord_id": owner.id,
+                "period": (property.id, 1769, 12),
+                "amount": amount,
+                "status": "open",
+            },
+            "arrears-b": {
+                "property_id": property.id,
+                "tenant_id": tenant.id,
+                "landlord_id": landlord_b.id,
+                "period": (property.id, 1770, 1),
+                "amount": amount,
+                "status": "open",
+            },
+        }
+        tenant.cash = sys.float_info.max
+        before_tenant = tenant.cash
+        before_owner = owner.cash
+        before_landlord_b = landlord_b.cash
+        before_events = len(world.events)
+        _settle_open_arrears(world, obligations)
+        self.assertEqual(tenant.cash, before_tenant)
+        self.assertEqual(owner.cash, before_owner)
+        self.assertEqual(landlord_b.cash, before_landlord_b)
+        self.assertEqual(len(world.events), before_events)
+        self.assertTrue(all(obligation["status"] == "open" for obligation in obligations.values()))
 
 
 if __name__ == "__main__":
