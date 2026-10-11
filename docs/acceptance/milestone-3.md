@@ -60,3 +60,13 @@ real market stock; and delivery transfers seller-owned lots only between
 co-located holders. Focused coverage is in
 `tests/test_shared_actions.py`, with the complete suite retaining the M2
 harbor and M3.1/M3.2 regressions.
+
+## M3.4 baseline — durable snapshots
+
+`redos/persistence.py` stores a checksummed, versioned snapshot of the
+canonical `World` in SQLite and validates the restored world before returning
+it. The snapshot includes the existing runtime registries and seeded random
+state without introducing a second simulation model. `execute_once` records a
+command result in canonical runtime state, so retries are no-ops and the
+idempotency ledger survives reload. Round-trip, retry-after-reload, and
+corruption rejection are covered by `tests/test_persistence.py`.
