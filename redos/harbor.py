@@ -9,7 +9,7 @@ from typing import Any
 from .audit import causal_chain, conservation_errors, inventory_totals, market_balance_errors, validate_world
 from .bank import deposit, open_account, originate_loan
 from .insurance import approve_claim, file_claim, issue_policy, record_loss
-from .model import Actor, Business, GoodType, JobOpening, Place, Property, Route, ScheduleEntry, TransportAsset, TransportFacility, TransportService, World
+from .model import Actor, Business, GoodType, Household, JobOpening, Place, Property, Route, ScheduleEntry, TransportAsset, TransportFacility, TransportService, World
 from .realestate import add_property, lease_property
 from .transport import add_asset, add_facility, add_service
 from .vertical import SliceState, build_integrated_world
@@ -91,6 +91,30 @@ def build_harbor_world(*, seed: int = 0) -> SliceState:
         )
         world.businesses[employer_id].employees.append(worker_id)
         world.add(JobOpening(f"opening-{worker_id}", employer_id, "transport mechanic", 8.0, 8, 16))
+    # One ordinary regional commuter makes the passenger-to-labor link part of
+    # the harbor fixture itself.  The worker starts at Brooklyn Landing and
+    # reaches a dock-side job only by boarding the declared ferry service.
+    world.add(Business("brooklyn-dock-employer", "Brooklyn Dock Employer", "dock", "dock employer", cash=10_000.0))
+    world.add(JobOpening("opening-brooklyn-commuter", "brooklyn-dock-employer", "dock worker", 24.0, 8, 16))
+    world.add(Household("brooklyn-commuter-household", "Brooklyn commuter household", "brooklyn-landing", cash=0.0, daily_expenses=2.0))
+    commuter = Actor(
+        "brooklyn-commuter",
+        "Brooklyn Commuter",
+        "brooklyn-landing",
+        age=29,
+        household_id="brooklyn-commuter-household",
+        occupation="dock worker",
+        employer_id="brooklyn-dock-employer",
+        money=0.0,
+        schedule=[
+            ScheduleEntry(0, 7, "sleep", "brooklyn-landing"),
+            ScheduleEntry(8, 16, "work", "dock", priority=10, interruptible=False),
+        ],
+    )
+    world.add(commuter)
+    world.households["brooklyn-commuter-household"].members.append(commuter.id)
+    world.businesses["brooklyn-dock-employer"].employees.append(commuter.id)
+    world.create_lot("bread", 12.0, holder_id="brooklyn-commuter-household", owner_id="brooklyn-commuter-household", provenance=("commuter household provisions",))
     for good_id, name, price in (
         ("fuel", "Barrelled fuel", 2.0),
         ("stores", "Vessel and cart stores", 1.0),
@@ -144,6 +168,27 @@ def build_harbor_world(*, seed: int = 0) -> SliceState:
                 operating_cost_payee_id="port-authority",
             ),
         )
+    add_asset(
+        world,
+        TransportAsset(
+            "brooklyn-ferry",
+            "Brooklyn Ferry",
+            "vessel",
+            "brooklyn-landing",
+            "brooklyn-dock-employer",
+            capacity=8,
+            home_location_id="brooklyn-landing",
+            fuel=48.0,
+            fuel_capacity=48.0,
+            fuel_burn_per_hour=0.1,
+            supplies={"stores": 24.0},
+            supply_capacity={"stores": 24.0},
+            supply_burn_per_hour={"stores": 0.001},
+            operating_cost_per_hour=0.5,
+            operating_cost_payee_id="port-authority",
+        ),
+    )
+    world.runtime["passenger_services"] = (("brooklyn-ferry", "brooklyn-landing", "dock"),)
     world.runtime["transport_services"] = (
         ("staten-sloop", "staten-landing-facility", "manhattan-dock"),
         ("manhattan-sloop", "manhattan-dock", "brooklyn-landing-facility"),
@@ -318,7 +363,7 @@ def harbor_audit(world: World) -> dict[str, Any]:
         }
         for asset in world.transport_assets.values()
     }
-    disruption_events = [event for event in world.events if event.kind in {"transport_weather", "freight_delayed", "freight_failed", "passenger_delayed"}]
+    disruption_events = [event for event in world.events if event.kind in {"transport_weather", "freight_delayed", "freight_failed", "passenger_delayed", "travel_delayed"}]
     return {
         "time": world.now.isoformat(),
         "journeys": journeys,
@@ -390,6 +435,22 @@ def harbor_audit(world: World) -> dict[str, Any]:
                 "late_hours": service.late_hours,
             }
             for service in world.transport_services.values()
+        },
+        "passenger_outcomes": {
+            "boardings": sum(1 for event in world.events if event.kind == "passenger_boarded"),
+            "arrivals": sum(1 for event in world.events if event.kind == "passenger_arrived"),
+            "delays": sum(1 for event in world.events if event.kind in {"passenger_delayed", "travel_delayed"} and "brooklyn-commuter" in event.actors),
+            "wage_misses": sum(1 for event in world.events if event.kind == "wage_missed"),
+            "commuter": {
+                "location": world.actors["brooklyn-commuter"].location_id,
+                "wages": sum(
+                    event.data.get("amount", 0.0)
+                    for event in world.events
+                    if event.kind == "payment" and "brooklyn-commuter" in event.actors and "wages" in event.description
+                ),
+                "work_hours": sum(world.actors["brooklyn-commuter"].work_hours_by_day.values()),
+                "household_debt": world.households["brooklyn-commuter-household"].debt,
+            },
         },
         "merchant_trades": [event.id for event in world.events if event.kind == "ocean_trade_booked"],
         "obligations": {
