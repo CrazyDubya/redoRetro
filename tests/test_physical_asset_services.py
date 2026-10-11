@@ -1,10 +1,12 @@
 import unittest
+from datetime import timedelta
 
 from redos.bootstrap import build_tiny_world
 from redos.equestrian import care_for_horse
 from redos.harbor import build_harbor_world, harbor_audit
 from redos.model import Actor, Business, GoodType, TransportAsset, TransportService
 from redos.runtime import run
+from redos.simulation import set_route_condition
 from redos.transport import add_asset, add_service, advance_services, service_asset_from_inventory, supply_asset_from_inventory
 
 
@@ -119,7 +121,133 @@ class PhysicalAssetServiceTests(unittest.TestCase):
                 worker_id=worker.id,
             )
         service.status = "ready"
-        self.assertEqual(supply_asset_from_inventory(world, "service-cart", "fuel", 1.0, source_holder_id="service-yard", good_type_id="fuel"), 1.0)
+        self.assertEqual(supply_asset_from_inventory(world, "service-cart", "fuel", 1.0, source_holder_id="service-yard", good_type_id="fuel", unit_price=1.0), 1.0)
+
+    def test_blocked_partial_service_leg_is_not_a_station(self):
+        world, _owner, worker = self._world()
+        asset = world.transport_assets["service-cart"]
+        asset.fuel = 10.0
+        add_service(world, TransportService("blocked-service", "service-cart", ("shop", "north")))
+        advance_services(world, 0.5)
+        set_route_condition(world, "shop-north", accessible=False, hazard="washed out")
+        advance_services(world, 1.0)
+        service = world.transport_services["blocked-service"]
+        self.assertEqual(service.status, "blocked")
+        self.assertGreater(service.elapsed_hours, 0.0)
+        with self.assertRaises(ValueError):
+            supply_asset_from_inventory(
+                world,
+                asset.id,
+                "fuel",
+                1.0,
+                source_holder_id="service-yard",
+                good_type_id="fuel",
+            )
+        with self.assertRaises(ValueError):
+            service_asset_from_inventory(
+                world,
+                asset.id,
+                source_holder_id="service-yard",
+                parts_good_type_id="maintenance-parts",
+                parts_quantity=1.0,
+                worker_id=worker.id,
+            )
+
+    def test_resource_stalled_service_is_not_a_station(self):
+        world, _owner, worker = self._world()
+        asset = world.transport_assets["service-cart"]
+        asset.fuel = 10.0
+        asset.supplies["stores"] = 0.0
+        asset.supply_capacity["stores"] = 2.0
+        asset.supply_burn_per_hour["stores"] = 1.0
+        add_service(world, TransportService("stalled-service", "service-cart", ("shop", "north")))
+        advance_services(world, 0.5)
+        service = world.transport_services["stalled-service"]
+        self.assertEqual(service.status, "waiting_asset")
+        self.assertTrue(service.route_ids)
+        with self.assertRaises(ValueError):
+            supply_asset_from_inventory(
+                world,
+                asset.id,
+                "fuel",
+                1.0,
+                source_holder_id="service-yard",
+                good_type_id="fuel",
+            )
+        with self.assertRaises(ValueError):
+            service_asset_from_inventory(
+                world,
+                asset.id,
+                source_holder_id="service-yard",
+                parts_good_type_id="maintenance-parts",
+                parts_quantity=1.0,
+                worker_id=worker.id,
+            )
+
+    def test_duplicate_fuel_requirements_are_aggregated_before_consumption(self):
+        world, _owner, _worker = self._world()
+        asset = world.transport_assets["service-cart"]
+        asset.fuel = 0.5
+        asset.fuel_burn_per_hour = 0.4
+        asset.supply_burn_per_hour["fuel"] = 0.4
+        add_service(world, TransportService("duplicate-fuel-service", "service-cart", ("shop", "north")))
+        advance_services(world, 1.0)
+        self.assertEqual(asset.fuel, 0.5)
+        self.assertEqual(asset.accrued_operating_cost, 0.0)
+        self.assertEqual(world.transport_services["duplicate-fuel-service"].elapsed_hours, 0.0)
+
+    def test_supply_requires_the_owner_when_stock_is_mixed(self):
+        world, owner, _worker = self._world()
+        other = Business("other-seller", "Other Seller", "shop", "supplier", cash=100.0)
+        world.add(other)
+        world.create_lot("fuel", 2.0, holder_id="service-yard", owner_id=other.id, provenance=("other seller stock",))
+        with self.assertRaises(ValueError):
+            supply_asset_from_inventory(
+                world,
+                "service-cart",
+                "fuel",
+                1.0,
+                source_holder_id="service-yard",
+                good_type_id="fuel",
+            )
+        added = supply_asset_from_inventory(
+            world,
+            "service-cart",
+            "fuel",
+            1.0,
+            source_holder_id="service-yard",
+            good_type_id="fuel",
+            seller_id="service-yard",
+            payee_id="service-yard",
+            unit_price=2.0,
+        )
+        self.assertEqual(added, 1.0)
+        self.assertEqual(world.quantity_held("service-yard", "fuel"), 21.0)
+
+    def test_zero_price_cross_owner_supply_requires_explicit_gift(self):
+        world, _owner, _worker = self._world()
+        with self.assertRaises(ValueError):
+            supply_asset_from_inventory(
+                world,
+                "service-cart",
+                "fuel",
+                1.0,
+                source_holder_id="service-yard",
+                good_type_id="fuel",
+            )
+        self.assertEqual(world.transport_assets["service-cart"].fuel, 0.0)
+        self.assertEqual(
+            supply_asset_from_inventory(
+                world,
+                "service-cart",
+                "fuel",
+                1.0,
+                source_holder_id="service-yard",
+                good_type_id="fuel",
+                allow_gift=True,
+            ),
+            1.0,
+        )
 
     def test_resource_bundle_preflight_does_not_burn_fuel_without_stores(self):
         world, owner, _worker = self._world()
@@ -145,7 +273,10 @@ class PhysicalAssetServiceTests(unittest.TestCase):
             parts_good_type_id="maintenance-parts",
             parts_quantity=1.0,
             worker_id=worker.id,
+            unit_price=5.0,
+            payee_id="service-yard",
         )
+        world.now += timedelta(minutes=30)
         with self.assertRaises(ValueError):
             service_asset_from_inventory(
                 world,
@@ -189,6 +320,7 @@ class PhysicalAssetServiceTests(unittest.TestCase):
 
     def test_horse_feed_can_be_consumed_from_canonical_stock(self):
         world = build_tiny_world(seed=603)
+        world.runtime["horse_feed_allow_gift"] = True
         world.add(GoodType("feed", "Horse feed", 1.0))
         world.create_lot("feed", 5.0, holder_id="shop", owner_id="shop-market-cashier", provenance=("feed delivery",))
         add_asset(

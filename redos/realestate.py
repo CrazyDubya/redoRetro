@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import math
 
 from .model import Property, World, require_finite
 
@@ -132,6 +133,72 @@ def collect_rent(world: World, property_id: str) -> float:
     return property.monthly_rent
 
 
+def _money_holder(world: World, holder_id: str):
+    return world.actors.get(holder_id) or world.businesses.get(holder_id) or world.households.get(holder_id)
+
+
+def _validate_rent_payment_plan(world: World, debtor_id: str, payments: list[tuple[str, float]]) -> None:
+    debtor = _money_holder(world, debtor_id)
+    if debtor is None:
+        raise KeyError(debtor_id)
+    debtor_field = "money" if debtor_id in world.actors else "cash"
+    debtor_balance = getattr(debtor, debtor_field)
+    total = sum(amount for _creditor_id, amount in payments)
+    if not math.isfinite(debtor_balance) or debtor_balance + 1e-9 < total:
+        raise ValueError(f"{debtor_id} cannot pay rent obligations")
+    for creditor_id, amount in payments:
+        creditor = _money_holder(world, creditor_id)
+        if creditor is None or creditor_id == debtor_id:
+            raise KeyError(creditor_id)
+        creditor_field = "money" if creditor_id in world.actors else "cash"
+        if not math.isfinite(getattr(creditor, creditor_field)) or not math.isfinite(amount):
+            raise ValueError(f"invalid rent creditor {creditor_id}")
+
+
+def _settle_open_arrears(world: World, obligations: dict) -> None:
+    """Settle open receivables by debtor and recorded creditor identity."""
+    debtor_ids = {obligation["tenant_id"] for obligation in obligations.values() if obligation["status"] == "open"}
+    for debtor_id in debtor_ids:
+        open_obligations = [
+            obligation
+            for obligation in obligations.values()
+            if obligation["status"] == "open" and obligation["tenant_id"] == debtor_id
+        ]
+        if not open_obligations:
+            continue
+        by_creditor: dict[str, float] = {}
+        for obligation in open_obligations:
+            by_creditor[obligation["landlord_id"]] = by_creditor.get(obligation["landlord_id"], 0.0) + float(obligation["amount"])
+        payments = list(by_creditor.items())
+        try:
+            _validate_rent_payment_plan(world, debtor_id, payments)
+        except (KeyError, ValueError):
+            continue
+        payment_events = {
+            creditor_id: world.pay(
+                debtor_id,
+                creditor_id,
+                amount,
+                reason="rent arrears settlement",
+            )
+            for creditor_id, amount in payments
+        }
+        debtor = _money_holder(world, debtor_id)
+        if debtor is not None:
+            debtor.debt = max(0.0, debtor.debt - sum(float(obligation["amount"]) for obligation in open_obligations))
+        for obligation in open_obligations:
+            obligation["status"] = "settled"
+            obligation["settled_at"] = world.now.isoformat()
+            world.record(
+                "rent_arrears_settled",
+                f"{debtor_id} settled rent arrears for {obligation['property_id']}",
+                actors=[debtor_id, obligation["landlord_id"]],
+                entities=[obligation["property_id"]],
+                causes=(payment_events[obligation["landlord_id"]].id,),
+                data={"amount": obligation["amount"], "period": obligation["period"], "creditor": obligation["landlord_id"]},
+            )
+
+
 def advance_rents(world: World) -> None:
     """Collect due rent and carry unpaid periods as retryable obligations.
 
@@ -167,19 +234,28 @@ def advance_rents(world: World) -> None:
             # Prefer settling the current period and all outstanding arrears
             # together.  This makes the debt lifecycle explicit and avoids
             # inventing a separate financial authority for rent collection.
+            arrears_by_creditor: dict[str, float] = {}
+            for obligation in open_arrears:
+                arrears_by_creditor[obligation["landlord_id"]] = arrears_by_creditor.get(obligation["landlord_id"], 0.0) + float(obligation["amount"])
+            payment_plan = [(property.owner_id, current_amount), *arrears_by_creditor.items()]
             if getattr(occupant, "cash", getattr(occupant, "money", 0.0)) + 1e-9 >= current_amount + arrears_amount:
-                payment = world.pay(
+                _validate_rent_payment_plan(world, occupant_id, payment_plan)
+                current_payment = world.pay(
                     occupant_id,
                     property.owner_id,
-                    current_amount + arrears_amount,
-                    reason=f"{property.id} rent and arrears",
+                    current_amount,
+                    reason=f"{property.id} rent",
                 )
+                arrears_payments = {
+                    creditor_id: world.pay(occupant_id, creditor_id, amount, reason=f"{property.id} rent arrears")
+                    for creditor_id, amount in arrears_by_creditor.items()
+                }
                 world.record(
                     "rent_paid",
                     f"{occupant_id} paid rent for {property.id}",
                     actors=[occupant_id, property.owner_id],
                     entities=[property.id],
-                    causes=(payment.id,),
+                    causes=(current_payment.id,),
                     data={"amount": current_amount, "arrears": arrears_amount},
                 )
                 for obligation in open_arrears:
@@ -188,10 +264,10 @@ def advance_rents(world: World) -> None:
                     world.record(
                         "rent_arrears_settled",
                         f"{occupant_id} settled rent arrears for {property.id}",
-                        actors=[occupant_id, property.owner_id],
+                        actors=[occupant_id, obligation["landlord_id"]],
                         entities=[property.id],
-                        causes=(payment.id,),
-                        data={"amount": obligation["amount"], "period": obligation["period"]},
+                        causes=(arrears_payments[obligation["landlord_id"]].id,),
+                        data={"amount": obligation["amount"], "period": obligation["period"], "creditor": obligation["landlord_id"]},
                     )
                 if arrears_amount > 0:
                     occupant.debt = max(0.0, occupant.debt - arrears_amount)
@@ -236,3 +312,8 @@ def advance_rents(world: World) -> None:
                     data={"amount": current_amount, "reason": reason, "obligation": key},
                 )
             property.last_rent_at = world.now
+
+    # Former tenants retain their debts even after a lease ends.  Settlement
+    # follows the recorded debtor/creditor pair rather than the property's
+    # current occupant or owner.
+    _settle_open_arrears(world, obligations)

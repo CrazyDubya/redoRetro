@@ -96,6 +96,40 @@ class BaronTests(unittest.TestCase):
         self.assertTrue(any(event.kind == "rent_arrears_settled" for event in world.events))
         self.assertTrue(all(obligation["status"] == "settled" for obligation in obligations.values()))
 
+    def test_sale_preserves_arrears_creditor(self):
+        world, property, owner, buyer = self._world()
+        tenant = world.households["tenant-household"]
+        lease_property(world, property.id, tenant.id)
+        tenant.cash = 0.0
+        advance_rents(world)
+        before_owner = owner.cash
+        before_buyer = buyer.cash
+        buy_property(world, property.id, buyer.id, owner.id)
+        tenant.cash = 20.0
+        world.now += timedelta(days=31)
+        advance_rents(world)
+        self.assertEqual(owner.cash, before_owner + property.market_value + 10.0)
+        self.assertEqual(buyer.cash, before_buyer - property.market_value + 10.0)
+        settled = [event for event in world.events if event.kind == "rent_arrears_settled"]
+        self.assertTrue(settled)
+        self.assertEqual(settled[-1].data["creditor"], owner.id)
+
+    def test_former_tenant_arrears_settle_after_lease_ends(self):
+        world, property, owner, _buyer = self._world()
+        former_tenant = world.households["tenant-household"]
+        new_tenant = Household("new-tenant-household", "New Tenant household", "tavern", cash=0.0)
+        world.add(new_tenant)
+        lease_property(world, property.id, former_tenant.id)
+        former_tenant.cash = 0.0
+        advance_rents(world)
+        lease_property(world, property.id, new_tenant.id)
+        former_tenant.cash = 10.0
+        before_owner = owner.cash
+        advance_rents(world)
+        self.assertEqual(owner.cash, before_owner + 10.0)
+        self.assertEqual(former_tenant.debt, 0.0)
+        self.assertTrue(all(obligation["status"] == "settled" for obligation in world.runtime["_rent_obligations"].values() if obligation["tenant_id"] == former_tenant.id))
+
 
 if __name__ == "__main__":
     unittest.main()

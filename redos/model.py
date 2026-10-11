@@ -748,6 +748,7 @@ class World:
         quantity: float,
         *,
         to_holder: str,
+        from_holder_id: str | None = None,
         causes: Iterable[str] = (),
         reason: str = "owned goods transferred at place",
     ) -> list[InventoryLot]:
@@ -763,6 +764,7 @@ class World:
             and lot.owner_id == owner_id
             and lot.quantity > 0
             and lot.holder_id != to_holder
+            and (from_holder_id is None or lot.holder_id == from_holder_id)
             and self._lot_is_available_at(lot, place_id)
         ]
         if sum(lot.quantity for lot in candidates) + 1e-9 < quantity:

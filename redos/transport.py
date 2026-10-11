@@ -274,7 +274,14 @@ def _asset_is_stationary(world: World, asset_id: str, *, at_place_id: str | None
     if any(movement.transport_asset_id == asset_id for movement in world.movements.values()):
         return False
     if any(
-        service.asset_id == asset_id and service.status == "in_transit"
+        service.asset_id == asset_id
+        and (
+            service.status == "in_transit"
+            or (
+                service.status in {"blocked", "waiting_asset"}
+                and service.route_index < len(service.route_ids)
+            )
+        )
         for service in world.transport_services.values()
     ):
         return False
@@ -592,6 +599,8 @@ def supply_asset_from_inventory(
     good_type_id: str,
     unit_price: float = 0.0,
     payee_id: str | None = None,
+    seller_id: str | None = None,
+    allow_gift: bool = False,
     causes: tuple[str, ...] = (),
 ) -> float:
     """Purchase and consume a physical operating supply at the asset's place.
@@ -622,11 +631,26 @@ def supply_asset_from_inventory(
     added = min(quantity, room)
     if added <= 1e-9:
         return 0.0
-    if world.quantity_held(source_holder_id, good_type_id) + 1e-9 < added:
+    source_lots = world.lots_held_by(source_holder_id, good_type_id)
+    owner_quantities: dict[str, float] = {}
+    for lot in source_lots:
+        owner_quantities[lot.owner_id] = owner_quantities.get(lot.owner_id, 0.0) + lot.quantity
+    if sum(owner_quantities.values()) + 1e-9 < added:
         raise ValueError(f"{source_holder_id} lacks {good_type_id} for {asset_id}")
-    payee = payee_id or source_holder_id
+    if seller_id is None:
+        owners = tuple(owner_id for owner_id, stock in owner_quantities.items() if stock > 1e-9)
+        if len(owners) != 1:
+            raise ValueError("supply source has multiple owners; seller authorization is required")
+        seller_id = owners[0]
+    if owner_quantities.get(seller_id, 0.0) + 1e-9 < added:
+        raise ValueError("seller does not own the requested physical supply")
+    payee = payee_id or seller_id
+    if payee != seller_id and not allow_gift:
+        raise ValueError("payment recipient is not the authorized supply owner")
     total = added * unit_price
     payer = asset.owner_id
+    if total <= 1e-9 and asset.owner_id != seller_id and not allow_gift:
+        raise ValueError("zero-price cross-owner supply transfer requires an explicit gift authorization")
     if total > 1e-9 and payer != payee:
         payer_obj = world.actors.get(payer) or world.businesses.get(payer) or world.households.get(payer)
         if payer_obj is None or getattr(payer_obj, "cash", getattr(payer_obj, "money", 0.0)) < total - 1e-9:
@@ -635,12 +659,13 @@ def supply_asset_from_inventory(
     if total > 1e-9 and payer != payee:
         payment = world.pay(payer, payee, total, causes=causes, reason=f"{asset.id} purchased {supply}")
     payment_causes = (*causes, payment.id) if payment is not None else tuple(causes)
-    transferred = world.transfer_goods(
+    transferred = world.transfer_owned_goods_at(
+        seller_id,
+        asset.location_id,
         good_type_id,
         added,
-        from_holder=source_holder_id,
+        from_holder_id=source_holder_id,
         to_holder=asset.id,
-        to_owner=asset.owner_id,
         causes=payment_causes,
         reason=f"{asset.id} received physical {supply} from {source_holder_id}",
     )
@@ -683,6 +708,8 @@ def service_asset_from_inventory(
     unit_price: float = 0.0,
     labor_price: float = 0.0,
     payee_id: str | None = None,
+    seller_id: str | None = None,
+    allow_gift: bool = False,
     causes: tuple[str, ...] = (),
 ) -> float:
     """Repair a carrier with physical parts and a qualifying worker hour."""
@@ -706,16 +733,35 @@ def service_asset_from_inventory(
     if not worker.current_activity or not worker.current_activity.startswith("work"):
         raise ValueError("maintenance requires a worker on shift")
     worker_usage = world.runtime.setdefault("_asset_service_worker_hours", {})
-    worker_key = (worker_id, world.now.isoformat())
+    # A service operation consumes one wall-clock labor hour.  Bucket the
+    # reservation by the containing hour so 10:00 and 10:30 fractional ticks
+    # cannot claim two jobs inside the same hour.
+    service_hour = world.now.replace(minute=0, second=0, microsecond=0)
+    worker_key = (worker_id, service_hour.isoformat())
     if worker_usage.get(worker_key, 0.0) >= 1.0 - 1e-9:
         raise ValueError("maintenance worker has no remaining service capacity")
     if world.location_of(source_holder_id) != asset.location_id:
         raise ValueError("maintenance source is not co-located with the asset")
-    if world.quantity_held(source_holder_id, parts_good_type_id) + 1e-9 < parts_quantity:
+    source_lots = world.lots_held_by(source_holder_id, parts_good_type_id)
+    owner_quantities: dict[str, float] = {}
+    for lot in source_lots:
+        owner_quantities[lot.owner_id] = owner_quantities.get(lot.owner_id, 0.0) + lot.quantity
+    if sum(owner_quantities.values()) + 1e-9 < parts_quantity:
         raise ValueError(f"{source_holder_id} lacks maintenance parts")
-    payee = payee_id or source_holder_id
+    if seller_id is None:
+        owners = tuple(owner_id for owner_id, stock in owner_quantities.items() if stock > 1e-9)
+        if len(owners) != 1:
+            raise ValueError("maintenance source has multiple owners; seller authorization is required")
+        seller_id = owners[0]
+    if owner_quantities.get(seller_id, 0.0) + 1e-9 < parts_quantity:
+        raise ValueError("maintenance seller does not own the requested parts")
+    payee = payee_id or seller_id
+    if payee != seller_id and not allow_gift:
+        raise ValueError("maintenance payment recipient is not the authorized parts owner")
     total = parts_quantity * unit_price + labor_price
     payer = asset.owner_id
+    if total <= 1e-9 and asset.owner_id != seller_id and not allow_gift:
+        raise ValueError("zero-price cross-owner maintenance requires an explicit gift authorization")
     if total > 1e-9 and payer != payee:
         payer_obj = world.actors.get(payer) or world.businesses.get(payer) or world.households.get(payer)
         if payer_obj is None or getattr(payer_obj, "cash", getattr(payer_obj, "money", 0.0)) < total - 1e-9:
@@ -724,12 +770,13 @@ def service_asset_from_inventory(
     if total > 1e-9 and payer != payee:
         payment = world.pay(payer, payee, total, causes=causes, reason=f"{asset.id} maintenance")
     payment_causes = (*causes, payment.id) if payment is not None else tuple(causes)
-    transferred = world.transfer_goods(
+    transferred = world.transfer_owned_goods_at(
+        seller_id,
+        asset.location_id,
         parts_good_type_id,
         parts_quantity,
-        from_holder=source_holder_id,
+        from_holder_id=source_holder_id,
         to_holder=asset.id,
-        to_owner=asset.owner_id,
         causes=payment_causes,
         reason=f"{asset.id} received maintenance parts",
     )
@@ -849,11 +896,12 @@ def _asset_resource_requirements(asset: TransportAsset, hours: float) -> tuple[t
     require_finite(hours, "asset operating hours")
     if hours <= 0:
         return ()
-    requirements: list[tuple[str, float]] = []
+    requirements: dict[str, float] = {}
     if asset.fuel_capacity > 0:
-        requirements.append(("fuel", asset.fuel_burn_per_hour * hours))
-    requirements.extend((supply, burn_rate * hours) for supply, burn_rate in asset.supply_burn_per_hour.items())
-    return tuple((supply, quantity) for supply, quantity in requirements if quantity > 1e-12)
+        requirements["fuel"] = asset.fuel_burn_per_hour * hours
+    for supply, burn_rate in asset.supply_burn_per_hour.items():
+        requirements[supply] = requirements.get(supply, 0.0) + burn_rate * hours
+    return tuple((supply, quantity) for supply, quantity in requirements.items() if quantity > 1e-12)
 
 
 def _consume_asset_bundle(
@@ -870,10 +918,14 @@ def _consume_asset_bundle(
     passenger movement so a failed step cannot burn fuel without advancing.
     """
     asset = world.transport_assets[asset_id]
+    normalized: dict[str, float] = {}
     for supply, quantity in requirements:
         require_finite(quantity, f"{supply} operating requirement")
         if quantity < 0:
             raise ValueError("operating requirements cannot be negative")
+        normalized[supply] = normalized.get(supply, 0.0) + quantity
+    normalized_requirements = tuple(normalized.items())
+    for supply, quantity in normalized_requirements:
         available = asset.fuel if supply == "fuel" else asset.supplies.get(supply, 0.0)
         if available + 1e-9 < quantity:
             asset.available = False
@@ -886,9 +938,18 @@ def _consume_asset_bundle(
                 data={"supply": supply, "required": quantity, "available": available},
             )
             return False
-    for supply, quantity in requirements:
-        if not consume_asset_supply(world, asset_id, supply, quantity, causes=causes):
-            raise RuntimeError("asset resource bundle changed during atomic consumption")
+    for supply, quantity in normalized_requirements:
+        if supply == "fuel":
+            asset.fuel -= quantity
+        else:
+            asset.supplies[supply] = asset.supplies.get(supply, 0.0) - quantity
+        world.record(
+            "asset_supply_consumed",
+            f"{asset.id} consumed {quantity} {supply}",
+            entities=[asset.id],
+            causes=causes,
+            data={"supply": supply, "quantity": quantity},
+        )
     return True
 
 

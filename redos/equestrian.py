@@ -69,7 +69,9 @@ def care_for_horse(
                 source_holder_id=source_id,
                 good_type_id="feed",
                 unit_price=float(world.runtime.get("horse_feed_unit_price", 0.0)),
-                payee_id=world.runtime.get("horse_feed_payee_id") or source_id,
+                payee_id=world.runtime.get("horse_feed_payee_id"),
+                seller_id=world.runtime.get("horse_feed_seller_id"),
+                allow_gift=bool(world.runtime.get("horse_feed_allow_gift", False)),
             )
         else:
             added = replenish_asset(world, horse_id, "feed", amount, source_id=source_id)
