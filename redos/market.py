@@ -244,6 +244,9 @@ def buy(world: World, buyer_id: str, market_id: str, good_type_id: str, quantity
         require_finite(offer, "market offer")
     market = world.markets[market_id]
     place_id = market.place_id
+    buyer = world.actors.get(buyer_id)
+    if buyer is not None and buyer.traveling_to is not None:
+        raise ValueError("buyer must be stationary at the market")
     if world.location_of(buyer_id) != place_id:
         raise ValueError("buyer must be physically present at the market")
     available = world.quantity_held(place_id, good_type_id)

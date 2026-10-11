@@ -14,12 +14,16 @@ class StreetSliceTests(unittest.TestCase):
         world = build_street_world(seed=7).world
         district = world.runtime["street_district"]
 
+        self.assertGreaterEqual(len(district["street_nodes"]), 12)
         self.assertEqual(len(district["visitable_sites"]), 8)
         self.assertEqual(len(district["interior_sites"]), 4)
         self.assertTrue(set(district["interior_sites"]).issubset(district["visitable_sites"]))
         self.assertEqual(district["source"]["library_of_congress"], RATZER_LOC_URL)
         self.assertEqual(district["source"]["new_york_public_library"], RATZER_NYPL_URL)
         self.assertTrue(all(world.places[place_id].is_interior for place_id in district["interior_sites"]))
+        for place_id in (*district["street_nodes"], *district["visitable_sites"]):
+            self.assertEqual(world.places[place_id].historical_source, RATZER_LOC_URL)
+            self.assertTrue(world.places[place_id].historical_confidence)
 
         path = street_path(world, "shop", "royal-exchange")
         self.assertTrue(path)

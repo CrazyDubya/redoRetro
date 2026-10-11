@@ -65,6 +65,35 @@ class SharedActionTests(unittest.TestCase):
         self.assertEqual(world.events[-1].kind, "delivery")
         self.assertTrue(result)
 
+    def test_purchase_is_rejected_while_buyer_is_physically_traveling(self) -> None:
+        world = build_street_world(seed=25).world
+        actor = world.actors["merchant"]
+        before_money = actor.money
+        before_goods = world.quantity_held(actor.id, "metals")
+        before_events = len(world.events)
+        move(world, actor.id, "royal-exchange")
+
+        with self.assertRaises(ValueError):
+            purchase(world, actor.id, "shop-market", "metals", 1.0)
+
+        self.assertEqual(actor.money, before_money)
+        self.assertEqual(world.quantity_held(actor.id, "metals"), before_goods)
+        self.assertEqual(len(world.events), before_events + 1)
+
+    def test_rejected_second_move_preserves_original_destination_and_movement(self) -> None:
+        world = build_street_world(seed=26).world
+        actor = world.actors["merchant"]
+        first = move(world, actor.id, "royal-exchange")
+        before_event_number = world._event_number
+
+        with self.assertRaises(ValueError):
+            move(world, actor.id, "fly-market")
+
+        self.assertEqual(actor.journey_destination_id, "royal-exchange")
+        self.assertEqual(actor.traveling_to, first.destination_id)
+        self.assertEqual(world._event_number, before_event_number)
+        self.assertEqual(tuple(world.movements), (first.id,))
+
 
 if __name__ == "__main__":
     unittest.main()

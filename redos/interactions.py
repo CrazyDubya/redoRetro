@@ -83,7 +83,7 @@ def reachable_path(world: World, actor_id: str, destination_id: str) -> list[Rou
 
 
 def enter_door(world: World, actor_id: str, door_id: str) -> str:
-    """Move a co-located actor through an authorized open door."""
+    """Begin timed movement through a co-located, authorized door."""
     actor = world.actors[actor_id]
     door = world.doors[door_id]
     if actor.traveling_to is not None:
@@ -93,13 +93,25 @@ def enter_door(world: World, actor_id: str, door_id: str) -> str:
     if not can_open_door(world, actor_id, door_id):
         raise PermissionError(f"{actor_id} cannot pass door {door_id}")
     destination_id = door.destination_id if actor.location_id == door.origin_id else door.origin_id
-    movement = world.move_actor(actor_id, destination_id, reason=f"{actor_id} passed {door_id}")
+    route = next(
+        (
+            candidate
+            for candidate in world.routes.values()
+            if candidate.origin_id == actor.location_id and candidate.destination_id == destination_id
+            and candidate.mode == "walk"
+        ),
+        None,
+    )
+    if route is None:
+        raise ValueError(f"door {door_id} has no canonical walking route")
+    movement = world.begin_movement(actor_id, route.id)
+    movement.door_id = door_id
     world.record(
-        "door_passed",
-        f"{actor_id} passed {door_id}",
+        "door_passage_started",
+        f"{actor_id} started passing {door_id}",
         actors=[actor_id],
-        entities=[door_id, destination_id],
-        causes=[movement.id],
+        entities=[door_id, movement.id, destination_id],
+        data={"destination_id": destination_id, "duration_hours": movement.duration_hours},
     )
     return destination_id
 

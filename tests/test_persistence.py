@@ -1,4 +1,5 @@
 import sqlite3
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -87,6 +88,51 @@ class PersistenceTests(unittest.TestCase):
             connection.close()
             with self.assertRaises(ValueError):
                 load_snapshot(path)
+
+    def test_snapshot_payload_is_explicit_json_not_executable_serialization(self) -> None:
+        world = build_street_world(seed=36).world
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "format.sqlite3"
+            save_snapshot(world, path)
+            connection = sqlite3.connect(path)
+            payload = connection.execute("SELECT payload FROM world_snapshots WHERE snapshot_id = 'latest'").fetchone()[0]
+            schema_version = connection.execute("SELECT schema_version FROM world_snapshots WHERE snapshot_id = 'latest'").fetchone()[0]
+            connection.close()
+
+        self.assertEqual(schema_version, 2)
+        document = json.loads(payload.decode("utf-8"))
+        self.assertEqual(document["format"], "redos.world")
+
+    def test_command_id_conflict_is_rejected_even_after_reload(self) -> None:
+        world = build_street_world(seed=34).world
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "conflict.sqlite3"
+            execute_once(world, "same-id", purchase, world, "merchant", "shop-market", "metals", 1.0)
+            save_snapshot(world, path)
+            restored = load_snapshot(path)
+            with self.assertRaises(ValueError):
+                execute_once(restored, "same-id", purchase, restored, "merchant", "shop-market", "metals", 2.0)
+
+    def test_snapshot_preserves_rng_for_72_plus_72_hour_equivalent_run(self) -> None:
+        uninterrupted = build_street_world(seed=35).world
+        resumed = build_street_world(seed=35).world
+        from redos.runtime import advance_world
+
+        for _ in range(144):
+            advance_world(uninterrupted, 1)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "equivalence.sqlite3"
+            for _ in range(72):
+                advance_world(resumed, 1)
+            save_snapshot(resumed, path)
+            resumed = load_snapshot(path)
+            for _ in range(72):
+                advance_world(resumed, 1)
+
+        self.assertEqual(uninterrupted.now, resumed.now)
+        self.assertEqual(uninterrupted.random.getstate(), resumed.random.getstate())
+        self.assertEqual([event.kind for event in uninterrupted.events], [event.kind for event in resumed.events])
+        self.assertEqual(uninterrupted._event_number, resumed._event_number)
 
 
 if __name__ == "__main__":

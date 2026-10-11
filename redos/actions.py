@@ -21,8 +21,12 @@ def move(world: World, actor_id: str, destination_id: str):
     path = reachable_path(world, actor_id, destination_id)
     if not path:
         raise ValueError(f"no walkable path from {actor.location_id} to {destination_id}")
-    actor.journey_destination_id = destination_id
+    # begin_movement performs the rejection checks before allocating an event
+    # or changing actor travel state.  Set the multi-leg intention only after
+    # that transition has committed; a rejected second command must not
+    # overwrite the destination of the journey already in progress.
     movement = world.begin_movement(actor_id, path[0].id)
+    actor.journey_destination_id = destination_id
     world.record(
         "travel_started",
         f"{actor_id} started travelling toward {destination_id}",

@@ -31,6 +31,8 @@ class Place:
     x: float = 0.0
     y: float = 0.0
     is_interior: bool = False
+    historical_source: str | None = None
+    historical_confidence: str = "unverified"
 
 
 @dataclass
@@ -406,6 +408,7 @@ class Movement:
     progress: float = 0.0
     transport_asset_id: str | None = None
     movement_mode: str = "walk"
+    door_id: str | None = None
     blocked_route_condition_id: str | None = None
 
 
@@ -1188,7 +1191,15 @@ class World:
             )
             actor.travel_remaining_hours = max(0, int(movement.duration_hours - movement.elapsed_hours))
             if movement.progress >= 1.0:
-                self.move_actor(actor.id, movement.destination_id, reason=f"arrived via {movement.route_id}")
+                arrival_event = self.move_actor(actor.id, movement.destination_id, reason=f"arrived via {movement.route_id}")
+                if movement.door_id is not None:
+                    self.record(
+                        "door_passed",
+                        f"{actor.id} passed {movement.door_id}",
+                        actors=[actor.id],
+                        entities=[movement.door_id, movement.destination_id],
+                        causes=[arrival_event.id],
+                    )
                 if transport_asset is not None:
                     transport_asset.location_id = movement.destination_id
                     from .transport import release_asset

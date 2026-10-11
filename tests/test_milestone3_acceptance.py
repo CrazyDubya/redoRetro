@@ -1,6 +1,9 @@
 import json
+from time import perf_counter
 import unittest
 
+from redos.actions import move, purchase
+from redos.persistence import execute_once
 from redos.runtime import run
 from redos.streets import build_street_world, street_audit
 from redos.vertical import default_dock_incident
@@ -9,7 +12,9 @@ from redos.vertical import default_dock_incident
 class Milestone3AcceptanceTests(unittest.TestCase):
     def test_thirty_day_street_audit_is_canonical_and_machine_readable(self) -> None:
         state = build_street_world(seed=51)
+        started = perf_counter()
         world = run(state.world, 30, external_events=(default_dock_incident(state),))
+        elapsed = perf_counter() - started
         report = street_audit(world)
 
         self.assertEqual(world.now.day, 31)
@@ -22,7 +27,57 @@ class Milestone3AcceptanceTests(unittest.TestCase):
         self.assertGreater(report["events"].get("meeting", 0), 20)
         self.assertGreaterEqual(len(report["incident_beliefs"]), 2)
         self.assertGreaterEqual(len(set(report["incident_beliefs"].values())), 2)
+        self.assertGreaterEqual(len(report["district"]["street_nodes"]), 12)
+        self.assertGreater(elapsed, 0.0)
+        self.assertLess(elapsed, 60.0)
         json.dumps(report)
+
+    def test_same_seed_player_command_tape_changes_the_canonical_world(self) -> None:
+        baseline = build_street_world(seed=52).world
+        intervened = build_street_world(seed=52).world
+
+        execute_once(
+            intervened,
+            "tape-inspect-shop",
+            lambda world, actor_id: world.record(
+                "tape_inspection",
+                "player inspected the shop counter",
+                actors=[actor_id],
+                entities=["shop-counter"],
+            ).id,
+            intervened,
+            "merchant",
+        )
+        execute_once(
+            intervened,
+            "tape-buy-metals",
+            purchase,
+            intervened,
+            "merchant",
+            "shop-market",
+            "metals",
+            1.0,
+        )
+        execute_once(
+            intervened,
+            "tape-move-exchange",
+            move,
+            intervened,
+            "merchant",
+            "royal-exchange",
+        )
+        for _ in range(6):
+            from redos.runtime import advance_world
+
+            advance_world(baseline, 1)
+            advance_world(intervened, 1)
+
+        self.assertEqual(baseline.seed, intervened.seed)
+        self.assertNotEqual(
+            baseline.actors["merchant"].money,
+            intervened.actors["merchant"].money,
+        )
+        self.assertGreater(intervened.quantity_held("merchant", "metals"), baseline.quantity_held("merchant", "metals"))
 
 
 if __name__ == "__main__":

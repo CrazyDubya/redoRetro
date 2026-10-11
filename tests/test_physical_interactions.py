@@ -2,6 +2,7 @@ import unittest
 
 from redos.interactions import enter_door, interact_with_object, reachable_path
 from redos.model import Actor
+from redos.simulation import tick
 from redos.streets import build_street_world
 
 
@@ -19,6 +20,7 @@ class PhysicalInteractionTests(unittest.TestCase):
         path = reachable_path(world, actor.id, "warehouse")
         self.assertTrue(path)
         enter_door(world, actor.id, "warehouse-door")
+        tick(world, path[0].travel_days * 24 or 1)
         self.assertEqual(actor.location_id, "warehouse")
         self.assertTrue(any(event.kind == "door_passed" and actor.id in event.actors for event in world.events))
 

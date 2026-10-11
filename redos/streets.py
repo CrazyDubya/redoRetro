@@ -40,6 +40,14 @@ _STREET_NODES = (
     ("broad-street", "Broad Street", 2.0, -0.5),
     ("pearl-street", "Pearl Street", 3.0, -1.5),
     ("water-street", "Water Street", 4.0, -1.0),
+    ("broadway-north", "Broadway North", 1.2, 1.0),
+    ("broadway-south", "Broadway South", 1.0, -1.0),
+    ("beaver-street", "Beaver Street", 1.4, -1.2),
+    ("stone-street", "Stone Street", 2.0, -1.6),
+    ("hanover-square", "Hanover Square", 2.8, -0.2),
+    ("william-street", "William Street", 3.2, 0.2),
+    ("cedar-street", "Cedar Street", 1.0, 0.4),
+    ("whitehall", "Whitehall", 0.2, -0.6),
 )
 
 _EXTERIOR_SITES = (
@@ -59,8 +67,21 @@ def _add_place(world: World, place_id: str, name: str, x: float, y: float, *, in
         place.x = x
         place.y = y
         place.is_interior = interior
+        place.historical_source = RATZER_LOC_URL
+        place.historical_confidence = "bounded survey-derived name/relationship"
         return
-    world.add(Place(place_id, name, development_level=2, x=x, y=y, is_interior=interior))
+    world.add(
+        Place(
+            place_id,
+            name,
+            development_level=2,
+            x=x,
+            y=y,
+            is_interior=interior,
+            historical_source=RATZER_LOC_URL,
+            historical_confidence="bounded survey-derived name/relationship",
+        )
+    )
 
 
 def _add_walk_edge(world: World, route_id: str, origin_id: str, destination_id: str, distance: float = 0.2) -> str:
@@ -78,6 +99,8 @@ def install_lower_manhattan(world: World) -> StreetDistrict:
     for place_id in _INTERIOR_SITES:
         place = world.places[place_id]
         place.is_interior = True
+        place.historical_source = RATZER_LOC_URL
+        place.historical_confidence = "fixture interior; survey relationship approximate"
 
     for door in (
         Door("tavern-door", "broad-street", "tavern"),
@@ -112,6 +135,18 @@ def install_lower_manhattan(world: World) -> StreetDistrict:
         ("broad-pearl", "broad-street", "pearl-street"),
         ("pearl-water", "pearl-street", "water-street"),
         ("water-dock", "water-street", "dock"),
+        ("broadway-north-wall", "broadway-north", "wall-street"),
+        ("broadway-north-cedar", "broadway-north", "cedar-street"),
+        ("cedar-wall", "cedar-street", "wall-street"),
+        ("broadway-south-broad", "broadway-south", "broad-street"),
+        ("broadway-south-beaver", "broadway-south", "beaver-street"),
+        ("beaver-stone", "beaver-street", "stone-street"),
+        ("stone-pearl", "stone-street", "pearl-street"),
+        ("stone-hanover", "stone-street", "hanover-square"),
+        ("hanover-william", "hanover-square", "william-street"),
+        ("william-water", "william-street", "water-street"),
+        ("whitehall-broadway", "whitehall", "broadway-south"),
+        ("whitehall-water", "whitehall", "water-street"),
         ("wall-trinity", "wall-street", "trinity-churchyard"),
         ("broad-exchange", "broad-street", "royal-exchange"),
         ("pearl-market", "pearl-street", "fly-market"),
@@ -150,6 +185,13 @@ def install_lower_manhattan(world: World) -> StreetDistrict:
         "visitable_sites": district.visitable_sites,
         "interior_sites": district.interior_sites,
         "street_route_ids": district.street_route_ids,
+        "place_metadata": {
+            place_id: {
+                "source": world.places[place_id].historical_source,
+                "confidence": world.places[place_id].historical_confidence,
+            }
+            for place_id in (*district.street_nodes, *district.visitable_sites)
+        },
     }
     return district
 
@@ -182,6 +224,7 @@ def street_audit(world: World) -> dict[str, object]:
             "visitable_sites": list(district.get("visitable_sites", ())),
             "interior_sites": list(district.get("interior_sites", ())),
             "source": district.get("source", {}),
+            "place_metadata": district.get("place_metadata", {}),
         },
         "events": dict(sorted(event_counts.items())),
         "population_by_site": dict(sorted(present_by_site.items())),
