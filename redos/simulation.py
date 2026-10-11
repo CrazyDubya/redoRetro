@@ -217,20 +217,11 @@ def best_route(
 
 def walk(world: World, actor_id: str, destination_id: str):
     """Start embodied movement for either a player or an autonomous actor."""
-    actor = world.actors[actor_id]
-    path = route_path(world, actor.location_id, destination_id, mode="walk")
-    if not path:
-        raise ValueError(f"no walkable path from {actor.location_id} to {destination_id}")
-    actor.journey_destination_id = destination_id
-    movement = world.begin_movement(actor_id, path[0].id)
-    world.record(
-        "travel_started",
-        f"{actor_id} started travelling toward {destination_id}",
-        actors=[actor_id],
-        entities=[path[0].id, path[0].destination_id],
-        data={"travel_hours": movement.duration_hours, "distance": path[0].distance},
-    )
-    return movement
+    # Import lazily to keep the canonical movement module independent from the
+    # shared action facade during module initialization.
+    from .actions import move
+
+    return move(world, actor_id, destination_id)
 
 
 def _start_next_leg(world: World, actor: Actor, target_id: str) -> bool:
@@ -256,7 +247,9 @@ def _start_next_leg(world: World, actor: Actor, target_id: str) -> bool:
             continue
     for service in services:
         asset_id, boarding_place_id, _destination_id = service[:3]
-        boarding_path = route_path(world, actor.location_id, boarding_place_id, mode="walk")
+        from .interactions import reachable_path
+
+        boarding_path = reachable_path(world, actor.id, boarding_place_id)
         if not boarding_path:
             continue
         route = boarding_path[0]
@@ -283,7 +276,9 @@ def _start_next_leg(world: World, actor: Actor, target_id: str) -> bool:
                 entities=[target_id, *(service[0] for service in services)],
             )
         return False
-    path = route_path(world, actor.location_id, target_id, mode="walk")
+    from .interactions import reachable_path
+
+    path = reachable_path(world, actor.id, target_id)
     if not path:
         return False
     route = path[0]

@@ -47,3 +47,16 @@ interactions without mutating the world.
 `tests/test_physical_interactions.py` covers locked-warehouse access, physical
 door passage, route reachability, a skilled dock operation, and rejection of
 remote or unsupported object actions.
+
+## M3.3 baseline — shared actions
+
+The shared action gateway in `redos/actions.py` exposes movement, inspection,
+conversation, purchase, and physical delivery for both future player callers
+and autonomous rules. It delegates to the existing canonical movement,
+interaction, information, market, and inventory gateways rather than creating
+player-specific state. Movement uses the same door-aware route search as the
+street fixture; conversation requires stationary co-presence; purchase uses
+real market stock; and delivery transfers seller-owned lots only between
+co-located holders. Focused coverage is in
+`tests/test_shared_actions.py`, with the complete suite retaining the M2
+harbor and M3.1/M3.2 regressions.
