@@ -4,7 +4,7 @@ from redos.bootstrap import build_tiny_world
 from redos.employment import pay_wages
 from redos.model import Actor, Business, JobOpening, Place, Route, ScheduleEntry, TransportAsset
 from redos.simulation import _start_next_leg, tick
-from redos.transport import add_asset, assign_asset, release_asset
+from redos.transport import add_asset, assign_asset, assign_crew, board_passenger, release_asset
 
 
 class PassengerTransportTests(unittest.TestCase):
@@ -51,6 +51,27 @@ class PassengerTransportTests(unittest.TestCase):
         self.assertTrue(any(event.kind == "passenger_service_unavailable" for event in world.events))
         release_asset(world, "ferry")
         self.assertTrue(_start_next_leg(world, worker, "island-job"))
+        self.assertEqual(worker.traveling_to, "island-job")
+
+    def test_rejected_boarding_is_atomic_and_can_retry_after_crew_is_added(self) -> None:
+        world, worker = self._world()
+        ferry = world.transport_assets["ferry"]
+        ferry.minimum_crew = 1
+        event_ids = [event.id for event in world.events]
+        event_number = world._event_number
+        with self.assertRaises(ValueError):
+            board_passenger(world, worker.id, ferry.id, "island-job")
+        self.assertEqual(world.movements, {})
+        self.assertIsNone(worker.traveling_to)
+        self.assertIsNone(ferry.assigned_shipment_id)
+        self.assertTrue(ferry.available)
+        self.assertEqual([event.id for event in world.events], event_ids)
+        self.assertEqual(world._event_number, event_number)
+
+        world.add(Actor("ferry-captain", "Ferry Captain", "shop"))
+        assign_crew(world, ferry.id, ("ferry-captain",))
+        movement = board_passenger(world, worker.id, ferry.id, "island-job")
+        self.assertIn(movement.id, world.movements)
         self.assertEqual(worker.traveling_to, "island-job")
 
 

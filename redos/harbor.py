@@ -6,7 +6,7 @@ from collections import defaultdict
 from datetime import timedelta
 from typing import Any
 
-from .audit import causal_chain, conservation_errors, inventory_totals, market_balance_errors, validate_world
+from .audit import causal_chain, conservation_errors, inventory_totals, market_balance_errors, money_conservation_errors, money_totals, validate_world
 from .bank import deposit, open_account, originate_loan
 from .insurance import approve_claim, file_claim, issue_policy, record_loss
 from .model import Actor, Business, GoodType, Household, JobOpening, Place, Property, Route, ScheduleEntry, TransportAsset, TransportFacility, TransportService, World
@@ -340,6 +340,7 @@ def build_harbor_world(*, seed: int = 0) -> SliceState:
     )
     add_property(world, premises)
     lease_property(world, premises.id, "brooklyn-supplier")
+    world.runtime["_money_initial_total"] = money_totals(world)["total"]
     return state
 
 
@@ -403,11 +404,7 @@ def harbor_audit(world: World) -> dict[str, Any]:
         "production_events": sum(1 for event in world.events if event.kind == "production"),
         "work_events": sum(1 for event in world.events if event.kind == "work"),
         "inventory": inventory_totals(world),
-        "money": {
-            "actors": sum(actor.money for actor in world.actors.values()),
-            "businesses": sum(business.cash for business in world.businesses.values()),
-            "households": sum(household.cash for household in world.households.values()),
-        },
+        "money": money_totals(world),
         "banking": {
             "accounts": {account.id: {"balance": account.balance, "status": account.status} for account in world.bank_accounts.values()},
             "loans": {loan.id: {"principal": loan.outstanding_principal, "interest": loan.accrued_interest, "status": loan.status} for loan in world.bank_loans.values()},
@@ -465,6 +462,7 @@ def harbor_audit(world: World) -> dict[str, Any]:
             "validation_errors": validate_world(world),
             "conservation_errors": conservation_errors(world),
             "market_balance_errors": market_balance_errors(world),
+            "money_errors": money_conservation_errors(world),
         },
     }
 
@@ -530,6 +528,7 @@ def run_harbor_demonstration(*, seed: int = 0, days: int = 90) -> tuple[World, d
                     "validation_errors": validate_world(world),
                     "conservation_errors": conservation_errors(world),
                     "market_balance_errors": market_balance_errors(world),
+                    "money_errors": money_conservation_errors(world),
                     "active_shipments": sum(1 for shipment in world.shipments.values() if shipment.status not in {"delivered", "failed"}),
                     "outstanding_transport_costs": sum(asset.operating_cost_due for asset in world.transport_assets.values()),
                 }

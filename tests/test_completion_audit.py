@@ -28,9 +28,12 @@ class CompletionAuditTests(unittest.TestCase):
         self.assertEqual(report["invariants"]["validation_errors"], [])
         self.assertEqual(report["invariants"]["conservation_errors"], [])
         self.assertEqual(report["invariants"]["market_balance_errors"], [])
+        self.assertEqual(report["invariants"]["money_errors"], [])
         self.assertTrue(report["checkpoints"])
         self.assertTrue(all(not checkpoint["validation_errors"] for checkpoint in report["checkpoints"]))
         self.assertTrue(all(not checkpoint["conservation_errors"] for checkpoint in report["checkpoints"]))
+        self.assertTrue(all(not checkpoint["market_balance_errors"] for checkpoint in report["checkpoints"]))
+        self.assertTrue(all(not checkpoint["money_errors"] for checkpoint in report["checkpoints"]))
 
         # A real loss is assessed through the canonical loss registry and can
         # settle while the rest of the world remains autonomous.

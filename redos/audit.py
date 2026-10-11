@@ -61,6 +61,31 @@ def market_balance_errors(world: World, tolerance: float = 1e-6) -> list[str]:
     return errors
 
 
+def money_totals(world: World) -> dict[str, float]:
+    """Return the cash held by canonical money-bearing entities."""
+    actors = sum(actor.money for actor in world.actors.values())
+    businesses = sum(business.cash for business in world.businesses.values())
+    households = sum(household.cash for household in world.households.values())
+    return {
+        "actors": actors,
+        "businesses": businesses,
+        "households": households,
+        "total": actors + businesses + households,
+    }
+
+
+def money_conservation_errors(world: World, tolerance: float = 1e-6) -> list[str]:
+    """Reconcile cash against the fixture's recorded initial cash total."""
+    expected = world.runtime.get("_money_initial_total")
+    if expected is None:
+        return []
+    current = money_totals(world)["total"]
+    difference = current - expected
+    if not math.isfinite(expected) or not math.isfinite(current) or abs(difference) > tolerance:
+        return [f"cash conservation difference {difference}"]
+    return []
+
+
 def validate_world(world: World) -> list[str]:
     errors: list[str] = []
     if not math.isfinite(world.seed):

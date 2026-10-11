@@ -554,22 +554,50 @@ def board_passenger(world: World, actor_id: str, asset_id: str, destination_id: 
     if len(path) != 1:
         raise ValueError("passenger service requires one physical carrier leg")
     route = path[0]
-    world._event_number += 1
+    movement_number = world._event_number + 1
+    movement_id = f"movement-{movement_number}"
+    if movement_id in world.movements:
+        raise ValueError(f"movement identifier {movement_id} is already in use")
+    _validate_asset_prerequisites(world, asset, assignment_id=movement_id)
+    duration_hours = effective_route_hours(world, route, mode=asset.asset_type)
+    event_number_checkpoint = world._event_number
+    event_count_checkpoint = len(world.events)
+    asset_checkpoint = (
+        asset.assigned_shipment_id,
+        asset.assignment_kind,
+        asset.available,
+        asset.unavailable_reason,
+    )
+    actor_checkpoint = (actor.traveling_to, actor.travel_remaining_hours, actor.position)
+    world._event_number = movement_number
     movement = Movement(
-        id=f"movement-{world._event_number}",
+        id=movement_id,
         actor_id=actor.id,
         route_id=route.id,
         origin_id=route.origin_id,
         destination_id=route.destination_id,
         elapsed_hours=0.0,
-        duration_hours=effective_route_hours(world, route, mode=asset.asset_type),
+        duration_hours=duration_hours,
         transport_asset_id=asset.id,
         movement_mode=asset.asset_type,
     )
-    world.add(movement)
-    assign_asset(world, asset.id, movement.id, kind="passenger")
-    actor.traveling_to = destination_id
-    actor.position = (world.places[route.origin_id].x, world.places[route.origin_id].y)
+    try:
+        world.add(movement)
+        assign_asset(world, asset.id, movement.id, kind="passenger")
+        actor.traveling_to = destination_id
+        actor.position = (world.places[route.origin_id].x, world.places[route.origin_id].y)
+    except Exception:
+        world.movements.pop(movement.id, None)
+        (
+            asset.assigned_shipment_id,
+            asset.assignment_kind,
+            asset.available,
+            asset.unavailable_reason,
+        ) = asset_checkpoint
+        actor.traveling_to, actor.travel_remaining_hours, actor.position = actor_checkpoint
+        del world.events[event_count_checkpoint:]
+        world._event_number = event_number_checkpoint
+        raise
     world.record(
         "passenger_boarded",
         f"{actor.id} boarded {asset.id}",

@@ -30,9 +30,11 @@ seeds 11, 12, and 27. The extended audit uses seed 31 for 90 days. The
 passenger comparison uses seed 44 and runs a baseline and identical storm-
 disrupted world to the same elapsed time.
 
-The only externally authored stimuli in the extended audit are:
+The externally authored stimuli in the extended audit are:
 
 * a deterministic storm affecting the Staten Island water routes;
+* an explicit route reopening after the storm, which is recorded as an
+  intervention rather than claimed as autonomous weather recovery;
 * a registered, typed cargo loss used to exercise the insurance settlement
   lifecycle.
 
@@ -51,10 +53,10 @@ The acceptance suite verifies that:
 * a passenger remains physically in transit during a disrupted crossing;
 * delayed arrival produces missed attendance and reduced wages;
 * the affected household accumulates a larger downstream cash shortfall;
-* fuel, supplies, maintenance, operating costs, inventory, money, and causal
+* fuel, supplies, maintenance, operating costs, inventory, cash, and causal
   ledgers remain reconciled;
-* daily checkpoints and final audits contain no validation, conservation, or
-  market-balance errors.
+* daily checkpoints and final audits contain no validation, conservation,
+  market-balance, or cash-conservation errors.
 
 ## Verification commands
 
@@ -73,4 +75,6 @@ surveyed 1770 map. Supply-transaction rollback still uses whole-world
 snapshots; this is tracked as a measured scalability optimization, not a
 correctness exception for this milestone. Fuel, maintenance parts, and labor
 are now physical for ordinary asset servicing, while explicitly administrative
-replenishment APIs remain available for controlled interventions.
+replenishment APIs remain available for controlled interventions. The regional
+passenger proof covers a one-way Brooklyn-to-Manhattan commute; a recurring
+return ferry service remains post-milestone work.
