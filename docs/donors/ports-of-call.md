@@ -28,7 +28,9 @@ The manual describes Ports of Call as a tramp-shipping business simulation. Veri
 - Existing `Contract`, `Shipment`, `InventoryLot`, `Route` and causal events remain authoritative for the freight obligation.
 - `dispatch_freight` creates a queued shipment without advancing the global clock.
 - `advance_freight` adjudicates loading, departure, route progress, arrival, unloading, physical custody transfer and settlement.
-- Operating cost is currently accrued and recorded on the carrier; cash settlement of that liability is deferred to the port-operations stage.
+- Operating cost accrues on the carrier and becomes an explicit payable. The
+  ordinary runtime settles it through `settle_operating_cost`; an unpaid cost
+  remains a retryable obligation rather than disappearing.
 
 ## Deliberately rejected for M2.1
 

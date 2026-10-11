@@ -203,6 +203,26 @@ def _matching_freight_plans(world: World, contract) -> list[dict]:
     ]
 
 
+def _record_contract_dispatch_deferred(world: World, contract_id: str, reason: str) -> None:
+    """Make a pending commercial dispatch observable without event flooding."""
+    deferred = world.runtime.setdefault("_contract_dispatch_deferred", {})
+    if deferred.get(contract_id) == reason:
+        return
+    deferred[contract_id] = reason
+    contract = world.contracts[contract_id]
+    world.record(
+        "contract_dispatch_deferred",
+        f"{contract.id} dispatch deferred",
+        actors=[contract.seller_id, contract.buyer_id],
+        entities=[contract.id, contract.good_type_id],
+        data={"reason": reason},
+    )
+
+
+def _clear_contract_dispatch_deferred(world: World, contract_id: str) -> None:
+    world.runtime.get("_contract_dispatch_deferred", {}).pop(contract_id, None)
+
+
 def _dispatch_commercial_contract(world: World, contract_id: str) -> bool:
     """Let declared carrier services compete for an economic obligation.
 
@@ -212,6 +232,7 @@ def _dispatch_commercial_contract(world: World, contract_id: str) -> bool:
     the existing non-carrier shipment path remains the compatible default.
     """
     contract = world.contracts[contract_id]
+    last_error: str | None = None
     for plan in _matching_freight_plans(world, contract):
         try:
             dispatch_freight(
@@ -226,18 +247,22 @@ def _dispatch_commercial_contract(world: World, contract_id: str) -> bool:
                 relay_leg_counts=tuple(plan["relay_leg_counts"]),
                 route_ids=tuple(plan["route_ids"]),
             )
+            _clear_contract_dispatch_deferred(world, contract.id)
             return True
-        except (KeyError, ValueError):
+        except (KeyError, ValueError) as exc:
+            last_error = str(exc)
             continue
     if _matching_freight_plans(world, contract):
         # A declared multimodal plan is authoritative.  Do not fall back to
         # the legacy shipment engine when its physical carriers are busy or
         # under-supplied; that would bypass the transfer yard and create a
         # second topology for the same commercial flow.
+        _record_contract_dispatch_deferred(world, contract.id, last_error or "no eligible multimodal carrier")
         return False
     matching = _matching_transport_services(world, contract)
     if not matching:
         dispatch_contract(world, contract_id)
+        _clear_contract_dispatch_deferred(world, contract.id)
         return True
     for carrier_id, origin_facility_id, destination_facility_id, *handling in matching:
         try:
@@ -250,11 +275,14 @@ def _dispatch_commercial_contract(world: World, contract_id: str) -> bool:
                 loading_hours=float(handling[0]) if handling else 1.0,
                 unloading_hours=float(handling[1]) if len(handling) > 1 else 1.0,
             )
+            _clear_contract_dispatch_deferred(world, contract.id)
             return True
-        except (KeyError, ValueError):
+        except (KeyError, ValueError) as exc:
             # A unavailable carrier leaves the contract open/allocated for a
             # later adjudication rather than creating a teleporting fallback.
+            last_error = str(exc)
             continue
+    _record_contract_dispatch_deferred(world, contract.id, last_error or "no eligible carrier")
     return False
 
 

@@ -38,6 +38,14 @@ class AutonomousCommercialTransportTests(unittest.TestCase):
         self.assertEqual(world.shipments, {})
         pending = [contract for contract in world.contracts.values() if contract.status == "open"]
         self.assertEqual(len(pending), 1)
+        deferred = [event for event in world.events if event.kind == "contract_dispatch_deferred"]
+        self.assertEqual(len(deferred), 1)
+        self.assertEqual(deferred[0].entities[0], pending[0].id)
+        _adjudicate_businesses(world)
+        self.assertEqual(
+            len([event for event in world.events if event.kind == "contract_dispatch_deferred"]),
+            1,
+        )
         release_asset(world, "service-sloop")
         _adjudicate_businesses(world)
         self.assertEqual(len(world.shipments), 1)
