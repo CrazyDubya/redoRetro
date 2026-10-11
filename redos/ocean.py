@@ -157,7 +157,7 @@ def book_ocean_trade(
     if origin_facility is None or destination_facility is None:
         world.record(
             "booking_rejected",
-            f"ocean booking rejected because its facilities do not exist",
+            "ocean booking rejected because its facilities do not exist",
             actors=[seller_id, buyer_id],
             entities=[trade.carrier_id, origin_facility_id, destination_facility_id],
             data={"reason": "unknown transport facility"},
@@ -250,7 +250,7 @@ def book_ocean_trade(
         world._event_number = event_number_checkpoint
         world.record(
             "booking_rejected",
-            f"ocean booking rejected before dispatch",
+            "ocean booking rejected before dispatch",
             actors=[seller_id, buyer_id],
             entities=[trade.carrier_id, origin_facility_id, destination_facility_id],
             data={"reason": str(exc)},

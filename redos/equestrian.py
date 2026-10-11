@@ -8,7 +8,7 @@ events remain shared with carts and vessels.
 
 from __future__ import annotations
 
-from .model import HorseState, Movement, World, require_finite
+from .model import Movement, World, require_finite
 from .transport import board_passenger, replenish_asset, supply_asset_from_inventory
 
 

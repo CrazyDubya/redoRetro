@@ -5,7 +5,7 @@ from datetime import datetime
 from redos.audit import causal_chain, conservation_errors, market_balance_errors, validate_world
 from redos.bootstrap import build_tiny_world
 from redos.enterprise import allocate_contract, advance_shipments, create_contract, dispatch_contract, mule_bid, settle_contract
-from redos.living import Bid, auction, meet, propagate_information, recollect, revise_belief, tell, witness_event
+from redos.living import Bid, auction, propagate_information, recollect, revise_belief, tell, witness_event
 from redos.market import autonomous_trade, buy, refresh_market, travel
 from redos.model import Actor, Place, Route
 from redos.employment import charge_household_expense, hire, pay_wages

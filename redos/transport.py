@@ -892,6 +892,29 @@ def service_asset_from_inventory(
     return asset.condition - before
 
 
+def _record_asset_service_deferred(world: World, asset_id: str, operation: str, error: Exception) -> None:
+    """Make an autonomous service retry observable without flooding the ledger."""
+    reason = f"{type(error).__name__}: {error}"
+    deferred = world.runtime.setdefault("_asset_service_deferred", {})
+    key = f"{asset_id}:{operation}"
+    if deferred.get(key) == reason:
+        return
+    deferred[key] = reason
+    asset = world.transport_assets[asset_id]
+    world.record(
+        "asset_service_deferred",
+        f"{asset.id} deferred {operation}",
+        actors=[asset.owner_id],
+        entities=[asset.id],
+        data={"operation": operation, "reason": reason},
+    )
+
+
+def _clear_asset_service_deferred(world: World, asset_id: str, operation: str) -> None:
+    deferred = world.runtime.get("_asset_service_deferred", {})
+    deferred.pop(f"{asset_id}:{operation}", None)
+
+
 def advance_asset_services(world: World) -> None:
     """Run declarative, physical refuelling and maintenance plans."""
     for plan in world.runtime.get("asset_service_plans", ()):
@@ -919,8 +942,9 @@ def advance_asset_services(world: World) -> None:
                         unit_price=float(supply_plan.get("unit_price", 0.0)),
                         payee_id=supply_plan.get("payee_id"),
                     )
-                except (KeyError, ValueError):
-                    pass
+                    _clear_asset_service_deferred(world, asset.id, f"supply:{supply}")
+                except (KeyError, ValueError) as exc:
+                    _record_asset_service_deferred(world, asset.id, f"supply:{supply}", exc)
         if asset.condition < float(plan.get("maintenance_threshold", 0.85)):
             try:
                 service_asset_from_inventory(
@@ -935,8 +959,9 @@ def advance_asset_services(world: World) -> None:
                     labor_price=float(plan.get("maintenance_labor_price", 0.0)),
                     payee_id=plan.get("maintenance_payee_id"),
                 )
-            except (KeyError, ValueError):
-                pass
+                _clear_asset_service_deferred(world, asset.id, "maintenance")
+            except (KeyError, ValueError) as exc:
+                _record_asset_service_deferred(world, asset.id, "maintenance", exc)
 
 
 def repair_asset(world: World, asset_id: str, amount: float = 1.0, *, source_kind: str = "administrative") -> float:

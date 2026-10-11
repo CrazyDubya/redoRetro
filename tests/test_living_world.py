@@ -5,7 +5,7 @@ from redos.living import witness_event
 from redos.model import Actor, AggregatePopulation, ScheduleEntry
 from redos.employment import age_one_year, charge_household_expense, hire, pay_wages
 from redos.simulation import add_aggregate_population, ask_about, interrupt, reconcile_population, run_days, tick, walk
-from redos.model import Business, JobOpening
+from redos.model import JobOpening
 
 
 class LivingWorldTests(unittest.TestCase):

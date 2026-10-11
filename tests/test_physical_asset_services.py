@@ -7,7 +7,7 @@ from redos.harbor import build_harbor_world, harbor_audit
 from redos.model import Actor, Business, GoodType, TransportAsset, TransportService
 from redos.runtime import run
 from redos.simulation import set_route_condition
-from redos.transport import add_asset, add_service, advance_services, service_asset_from_inventory, supply_asset_from_inventory
+from redos.transport import add_asset, add_service, advance_asset_services, advance_services, service_asset_from_inventory, supply_asset_from_inventory
 
 
 class PhysicalAssetServiceTests(unittest.TestCase):
@@ -44,6 +44,24 @@ class PhysicalAssetServiceTests(unittest.TestCase):
             ),
         )
         return world, owner, worker
+
+    def test_autonomous_service_deferral_is_auditable_without_event_flood(self):
+        world = build_harbor_world(seed=603).world
+        asset = world.transport_assets["merchant-cart"]
+        asset.fuel = 0.0
+        for lot in world.lots.values():
+            if lot.holder_id == "shop-works" and lot.good_type_id == "fuel":
+                lot.quantity = 0.0
+        advance_asset_services(world)
+        advance_asset_services(world)
+        deferred = [
+            event
+            for event in world.events
+            if event.kind == "asset_service_deferred" and asset.id in event.entities
+        ]
+        self.assertEqual(len(deferred), 1)
+        self.assertEqual(deferred[0].data["operation"], "supply:fuel")
+        self.assertIn("fuel", deferred[0].data["reason"])
 
     def test_supply_consumes_physical_stock_and_pays_supplier(self):
         world, owner, _worker = self._world()

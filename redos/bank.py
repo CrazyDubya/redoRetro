@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import timedelta
 import math
 
-from .model import BankAccount, BankLoan, Business, Household, World, require_finite
+from .model import BankAccount, BankLoan, Business, World, require_finite
 
 
 def _money_holder(world: World, holder_id: str):

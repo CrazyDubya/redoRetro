@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import copy
 from typing import Iterable
 
-from .model import Actor, GoodType, Market, Place, Route, World, require_finite
+from .model import Actor, GoodType, Market, World, require_finite
 from .simulation import route_path
 
 
@@ -307,7 +307,7 @@ def travel(world: World, actor_id: str, destination_id: str) -> int:
 
     path = route_path(world, world.actors[actor_id].location_id, destination_id)
     total_hours = sum(max(1.0, route.travel_days * 24.0) for route in path)
-    movement = walk(world, actor_id, destination_id)
+    walk(world, actor_id, destination_id)
     return int((total_hours + 23.999999) // 24) if total_hours >= 24 else 0
 
 

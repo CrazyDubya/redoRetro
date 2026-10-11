@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .model import Actor, Business, JobOpening, ScheduleEntry, World
+from .model import Business, ScheduleEntry, World
 
 
 def hire(world: World, actor_id: str, opening_id: str) -> None:
@@ -69,7 +69,6 @@ def charge_household_expense(
     actor = world.actors[actor_id]
     household = world.households.get(actor.household_id or "")
     payer_id = household.id if household is not None and household.cash >= amount else actor_id
-    payer = household if payer_id == household.id else actor
     available = household.cash if household is not None and payer_id == household.id else actor.money
     if payee_id is not None and available >= amount:
         world.pay(payer_id, payee_id, amount, causes=causes, reason=f"household expense: {expense}")

@@ -9,13 +9,13 @@ production, or rumor commands itself.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Iterable
 
 from .enterprise import advance_shipments, compete, create_contract, dispatch_contract
 from .bank import advance_finance
 from .employment import charge_household_expense, pay_wages
-from .living import Recipe, meet, produce, propagate_information, recollect, revise_belief, tell, witness_event
+from .living import meet, produce, propagate_information, recollect, revise_belief, witness_event
 from .insurance import advance_claims
 from .merchant import evaluate_merchant_route
 from .ocean import book_ocean_trade

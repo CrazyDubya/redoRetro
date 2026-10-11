@@ -2,7 +2,7 @@ import unittest
 
 from redos.bootstrap import build_tiny_world
 from redos.living import Bid, Recipe, add_environment_cell, auction, produce, propagate, recollect, tell, witness_event
-from redos.model import EnvironmentCell, GoodType, ScheduleEntry
+from redos.model import EnvironmentCell, GoodType
 
 
 class StimulatingSimulationKernelTests(unittest.TestCase):

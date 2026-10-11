@@ -2,7 +2,6 @@ import unittest
 
 from redos.bootstrap import build_tiny_world
 from redos.insider import buy_information, execute_trade, issue_security, portfolio_value, publish_wire_event
-from redos.model import Actor
 
 
 class InsideTraderTests(unittest.TestCase):

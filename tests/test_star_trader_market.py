@@ -1,7 +1,7 @@
 import unittest
 
 from redos.bootstrap import build_tiny_world
-from redos.market import autonomous_trade, bargain, buy, quote, sell, travel
+from redos.market import autonomous_trade, bargain, quote, travel
 
 
 class StarTraderMarketTests(unittest.TestCase):
@@ -23,7 +23,6 @@ class StarTraderMarketTests(unittest.TestCase):
 
     def test_market_quotes_respond_to_supply_and_shortage(self) -> None:
         world = build_tiny_world()
-        market = world.markets["shop-market"]
         world.create_lot("medicine", 40, holder_id="shop", owner_id="shop")
         surplus = quote(world, "shop-market", "medicine", 1, side="buy").unit_price
         world.consume_goods("shop", "medicine", world.quantity_held("shop", "medicine"))

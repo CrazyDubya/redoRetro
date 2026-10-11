@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 
 from .living import tell
-from .model import Business, Security, SecurityHolding, Statement, TradeOrder, World
+from .model import Security, SecurityHolding, Statement, TradeOrder, World
 
 
 def _money_holder(world: World, holder_id: str):
@@ -69,7 +69,7 @@ def execute_trade(
     price: float | None = None,
     order_id: str | None = None,
 ) -> TradeOrder:
-    buyer = _money_holder(world, buyer_id)
+    _money_holder(world, buyer_id)
     _money_holder(world, seller_id)
     if buyer_id == seller_id:
         raise ValueError("trade requires distinct buyer and seller")

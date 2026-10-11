@@ -9,7 +9,6 @@ ledgers.
 from __future__ import annotations
 
 from .model import HorseState, World, require_finite
-from .transport import assign_asset
 
 
 TRAINING = {
