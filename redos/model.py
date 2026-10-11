@@ -34,6 +34,32 @@ class Place:
 
 
 @dataclass
+class Door:
+    """A physical threshold between two canonical places."""
+
+    id: str
+    origin_id: str
+    destination_id: str
+    open: bool = True
+    locked: bool = False
+    access_tag: str | None = None
+
+
+@dataclass
+class SituatedObject:
+    """An interactable object that exists at one physical place."""
+
+    id: str
+    name: str
+    place_id: str
+    actions: tuple[str, ...] = ("inspect",)
+    owner_id: str | None = None
+    required_skill: str | None = None
+    required_skill_level: float = 0.0
+    state: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class Route:
     id: str
     origin_id: str
@@ -546,6 +572,8 @@ class World:
         self.seed = seed
         self.random = random.Random(seed)
         self.places: dict[str, Place] = {}
+        self.doors: dict[str, Door] = {}
+        self.situated_objects: dict[str, SituatedObject] = {}
         self.routes: dict[str, Route] = {}
         self.route_conditions: dict[str, RouteCondition] = {}
         self.goods: dict[str, GoodType] = {}
@@ -587,6 +615,8 @@ class World:
     def add(self, entity: Any) -> Any:
         collection = {
             Place: self.places,
+            Door: self.doors,
+            SituatedObject: self.situated_objects,
             Route: self.routes,
             RouteCondition: self.route_conditions,
             GoodType: self.goods,

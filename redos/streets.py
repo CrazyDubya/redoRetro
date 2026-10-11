@@ -16,7 +16,7 @@ from collections import deque
 from dataclasses import dataclass
 
 from .harbor import build_harbor_world
-from .model import Place, Route, World
+from .model import Door, Place, Route, SituatedObject, World
 from .simulation import route_is_accessible
 from .vertical import SliceState
 
@@ -78,6 +78,30 @@ def install_lower_manhattan(world: World) -> StreetDistrict:
     for place_id in _INTERIOR_SITES:
         place = world.places[place_id]
         place.is_interior = True
+
+    for door in (
+        Door("tavern-door", "broad-street", "tavern"),
+        Door("shop-door", "wall-street", "shop"),
+        Door("workshop-door", "pearl-street", "workshop"),
+        Door("warehouse-door", "water-street", "warehouse", locked=True, access_tag="warehouse"),
+    ):
+        if door.id not in world.doors:
+            world.add(door)
+    for obj in (
+        SituatedObject("tavern-ledger", "Tavern ledger", "tavern"),
+        SituatedObject("shop-counter", "Shop counter", "shop"),
+        SituatedObject("exchange-board", "Exchange board", "royal-exchange"),
+        SituatedObject(
+            "dock-crane",
+            "Dock crane",
+            "dock",
+            actions=("inspect", "operate"),
+            required_skill="dockwork",
+            required_skill_level=1.0,
+        ),
+    ):
+        if obj.id not in world.situated_objects:
+            world.add(obj)
 
     # These connections are a compact, traversable interpretation of the
     # lower-city streets and waterfront landmarks shown on the Ratzer survey.

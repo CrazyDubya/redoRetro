@@ -35,3 +35,15 @@ boarding can occur.
 The Brooklyn commuter remains a deliberately narrow acceptance fixture. The
 return ferry is now represented, but a complete recurring timetable and a
 browser client are later M3 phases.
+
+## M3.2 baseline
+
+The district now has canonical `Door` and `SituatedObject` entities. The
+interaction gateway requires physical co-location, current reachability, an
+open door, and any declared access or skill. It records successful actions as
+causal events and rejects remote, unauthorized, unsupported, or in-transit
+interactions without mutating the world.
+
+`tests/test_physical_interactions.py` covers locked-warehouse access, physical
+door passage, route reachability, a skilled dock operation, and rejection of
+remote or unsupported object actions.
