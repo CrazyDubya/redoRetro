@@ -80,3 +80,14 @@ create bounded meetings, and propagate witnessed information. The regression
 in `tests/test_street_slice.py` runs thirty days with one external dock
 incident and checks movement, work, meetings, statements, and ordinary tavern
 population. No named patron or witness is injected by the test.
+
+## M3.6 baseline — mobile web client
+
+`python -m redos.web` starts a standard-library-only local server. Its
+responsive top-down client reads `/api/state` and submits idempotent commands
+to `/api/command`. The browser controls the existing `merchant` actor through
+the shared action gateway for movement, inspection, conversation, purchase,
+delivery, door passage, and waiting. `tests/test_web.py` exercises the actual
+HTTP server, verifies physical movement rather than teleportation, and checks
+that retrying a command does not create a second mutation. No Docker, cloud
+service, frontend dependency, or player-only world state is required.

@@ -14,3 +14,13 @@ The package has no runtime dependencies.
 
 The integrated Milestone 1 fixture and its acceptance evidence are documented
 in [docs/acceptance/milestone-1.md](docs/acceptance/milestone-1.md).
+
+The dependency-free Living Streets browser slice can be started with:
+
+```sh
+python -m redos.web
+```
+
+It serves the canonical street world locally and exposes the same movement,
+inspection, conversation, market, delivery, and wait actions used by the
+simulation rules.
