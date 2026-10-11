@@ -109,6 +109,7 @@ def build_harbor_world(*, seed: int = 0) -> SliceState:
         schedule=[
             ScheduleEntry(0, 7, "sleep", "brooklyn-landing"),
             ScheduleEntry(8, 16, "work", "dock", priority=10, interruptible=False),
+            ScheduleEntry(16, 24, "return home", "brooklyn-landing"),
         ],
     )
     world.add(commuter)
@@ -188,7 +189,13 @@ def build_harbor_world(*, seed: int = 0) -> SliceState:
             operating_cost_payee_id="port-authority",
         ),
     )
-    world.runtime["passenger_services"] = (("brooklyn-ferry", "brooklyn-landing", "dock"),)
+    # The same ferry serves both physical directions.  It is not a teleport
+    # link: the reverse service becomes boardable only after the vessel reaches
+    # Manhattan and releases its outbound passenger movement.
+    world.runtime["passenger_services"] = (
+        ("brooklyn-ferry", "brooklyn-landing", "dock"),
+        ("brooklyn-ferry", "dock", "brooklyn-landing"),
+    )
     world.runtime["transport_services"] = (
         ("staten-sloop", "staten-landing-facility", "manhattan-dock"),
         ("manhattan-sloop", "manhattan-dock", "brooklyn-landing-facility"),
