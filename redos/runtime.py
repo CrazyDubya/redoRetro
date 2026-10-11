@@ -23,7 +23,7 @@ from .market import buy, refresh_market
 from .model import Actor, World, require_finite
 from .realestate import advance_rents
 from .simulation import _start_next_leg, route_path, tick
-from .transport import advance_failed_cargo_recovery, advance_services, dispatch_freight, settle_operating_cost
+from .transport import advance_asset_services, advance_failed_cargo_recovery, advance_services, dispatch_freight, settle_operating_cost
 
 
 @dataclass(frozen=True)
@@ -194,6 +194,15 @@ def _matching_transport_services(world: World, contract) -> list[tuple]:
     ]
 
 
+def _matching_freight_plans(world: World, contract) -> list[dict]:
+    return [
+        plan for plan in world.runtime.get("freight_plans", ())
+        if plan.get("origin_id") == contract.origin_id
+        and plan.get("destination_id") == contract.destination_id
+        and (not plan.get("good_type_ids") or contract.good_type_id in plan["good_type_ids"])
+    ]
+
+
 def _dispatch_commercial_contract(world: World, contract_id: str) -> bool:
     """Let declared carrier services compete for an economic obligation.
 
@@ -203,6 +212,29 @@ def _dispatch_commercial_contract(world: World, contract_id: str) -> bool:
     the existing non-carrier shipment path remains the compatible default.
     """
     contract = world.contracts[contract_id]
+    for plan in _matching_freight_plans(world, contract):
+        try:
+            dispatch_freight(
+                world,
+                contract_id,
+                carrier_id=plan["carrier_plan"][0],
+                origin_facility_id=plan["origin_facility_id"],
+                destination_facility_id=plan["destination_facility_id"],
+                loading_hours=float(plan.get("loading_hours", 1.0)),
+                unloading_hours=float(plan.get("unloading_hours", 1.0)),
+                carrier_plan=tuple(plan["carrier_plan"]),
+                relay_leg_counts=tuple(plan["relay_leg_counts"]),
+                route_ids=tuple(plan["route_ids"]),
+            )
+            return True
+        except (KeyError, ValueError):
+            continue
+    if _matching_freight_plans(world, contract):
+        # A declared multimodal plan is authoritative.  Do not fall back to
+        # the legacy shipment engine when its physical carriers are busy or
+        # under-supplied; that would bypass the transfer yard and create a
+        # second topology for the same commercial flow.
+        return False
     matching = _matching_transport_services(world, contract)
     if not matching:
         dispatch_contract(world, contract_id)
@@ -230,7 +262,7 @@ def _adjudicate_businesses(world: World) -> None:
     # Input and output flows are data registered by the fixture.  The runtime
     # does not know that one of them is a mill or a bakery.
     for contract in list(world.contracts.values()):
-        if contract.status == "open" and _matching_transport_services(world, contract):
+        if contract.status == "open" and (_matching_transport_services(world, contract) or _matching_freight_plans(world, contract)):
             _dispatch_commercial_contract(world, contract.id)
     for seller_id, buyer_id, good_id, quantity, price in world.runtime.get("input_flows", ()):
         if world.quantity_held(buyer_id, good_id) >= quantity or world.quantity_held(seller_id, good_id) < quantity or _has_open_flow(world, seller_id, buyer_id, good_id):
@@ -425,6 +457,7 @@ def advance_world(world: World, hours: float = 1, *, external_events: Iterable[D
         for asset in world.transport_assets.values():
             if asset.operating_cost_due > 1e-9:
                 settle_operating_cost(world, asset.id)
+        advance_asset_services(world)
         # Financial obligations are ordinary world-clock participants.  The
         # kernels remain callable for focused operations, while live accounts
         # and loans accrue without a scenario script having to remember them.

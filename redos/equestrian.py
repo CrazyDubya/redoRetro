@@ -9,7 +9,7 @@ events remain shared with carts and vessels.
 from __future__ import annotations
 
 from .model import HorseState, Movement, World, require_finite
-from .transport import board_passenger, replenish_asset
+from .transport import board_passenger, replenish_asset, supply_asset_from_inventory
 
 
 def ride(world: World, rider_id: str, horse_id: str, destination_id: str) -> Movement:
@@ -60,7 +60,19 @@ def care_for_horse(
         raise ValueError("care amount must be positive")
     horse = _require_idle_horse(world, horse_id)
     if action == "feed":
-        added = replenish_asset(world, horse_id, "feed", amount, source_id=source_id)
+        if source_id is not None and "feed" in world.goods and source_id != horse_id:
+            added = supply_asset_from_inventory(
+                world,
+                horse_id,
+                "feed",
+                amount,
+                source_holder_id=source_id,
+                good_type_id="feed",
+                unit_price=float(world.runtime.get("horse_feed_unit_price", 0.0)),
+                payee_id=world.runtime.get("horse_feed_payee_id") or source_id,
+            )
+        else:
+            added = replenish_asset(world, horse_id, "feed", amount, source_id=source_id)
         world.record(
             "horse_fed",
             f"{horse_id} was fed",

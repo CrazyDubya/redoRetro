@@ -9,7 +9,7 @@ from typing import Any
 from .audit import causal_chain, conservation_errors, inventory_totals, market_balance_errors, validate_world
 from .bank import deposit, open_account, originate_loan
 from .insurance import approve_claim, file_claim, issue_policy, record_loss
-from .model import Business, Place, Property, Route, TransportAsset, TransportFacility, TransportService, World
+from .model import Actor, Business, GoodType, JobOpening, Place, Property, Route, ScheduleEntry, TransportAsset, TransportFacility, TransportService, World
 from .realestate import add_property, lease_property
 from .transport import add_asset, add_facility, add_service
 from .vertical import SliceState, build_integrated_world
@@ -23,6 +23,7 @@ def build_harbor_world(*, seed: int = 0) -> SliceState:
         Place("brooklyn-landing", "Brooklyn Landing", 2, x=5.0, y=1.0),
         Place("staten-landing", "Staten Island Landing", 2, x=5.0, y=-2.0),
         Place("newjersey-landing", "New Jersey Landing", 2, x=1.0, y=-4.0),
+        Place("newjersey-transfer", "New Jersey Transshipment Yard", 2, x=2.0, y=-3.5),
     ):
         world.add(place)
     routes = (
@@ -30,8 +31,13 @@ def build_harbor_world(*, seed: int = 0) -> SliceState:
         Route("brooklyn-dock", "brooklyn-landing", "dock", 2.0, 1, "water", "water", ("vessel",)),
         Route("dock-staten", "dock", "staten-landing", 2.5, 1, "water", "water", ("vessel",)),
         Route("staten-dock", "staten-landing", "dock", 2.5, 1, "water", "water", ("vessel",)),
-        Route("newjersey-dock", "newjersey-landing", "dock", 2.0, 1, "cart", "road", ("cart",)),
-        Route("dock-newjersey", "dock", "newjersey-landing", 2.0, 1, "cart", "road", ("cart",)),
+        # New Jersey cargo must cross a shore-side transfer yard before it can
+        # board a vessel.  The historical route names are retained so weather
+        # fixtures continue to refer to the land leg explicitly.
+        Route("newjersey-dock", "newjersey-landing", "newjersey-transfer", 1.0, 1, "cart", "road", ("cart",)),
+        Route("dock-newjersey", "newjersey-transfer", "newjersey-landing", 1.0, 1, "cart", "road", ("cart",)),
+        Route("newjersey-transfer-dock", "newjersey-transfer", "dock", 2.5, 2, "water", "water", ("vessel",)),
+        Route("dock-newjersey-transfer", "dock", "newjersey-transfer", 2.5, 2, "water", "water", ("vessel",)),
         Route("north-shop", "north", "shop", 2.0, 2, "cart", "road", ("cart",)),
     )
     for route in routes:
@@ -58,10 +64,46 @@ def build_harbor_world(*, seed: int = 0) -> SliceState:
         Business("newjersey-transshipper", "New Jersey Transshipper", "newjersey-landing", "warehouse", cash=5_000.0),
         Business("dock-supplier", "Manhattan Dock Supplier", "dock", "supplier", cash=5_000.0),
         Business("port-authority", "Harbor Port Authority", "dock", "port", cash=25_000.0),
+        Business("dock-works", "Dock Works", "dock", "service", cash=5_000.0),
+        Business("staten-works", "Staten Works", "staten-landing", "service", cash=5_000.0),
+        Business("jersey-works", "Jersey Works", "newjersey-transfer", "service", cash=5_000.0),
+        Business("jersey-landing-works", "Jersey Landing Works", "newjersey-landing", "service", cash=5_000.0),
+        Business("shop-works", "Shop Works", "shop", "service", cash=5_000.0),
     ):
         world.add(business)
+    for worker_id, name, employer_id, location_id in (
+        ("dock-mechanic", "Dock Mechanic", "dock-works", "dock"),
+        ("staten-mechanic", "Staten Mechanic", "staten-works", "staten-landing"),
+        ("jersey-mechanic", "Jersey Mechanic", "jersey-works", "newjersey-transfer"),
+        ("jersey-landing-mechanic", "Jersey Landing Mechanic", "jersey-landing-works", "newjersey-landing"),
+        ("shop-mechanic", "Shop Mechanic", "shop-works", "shop"),
+    ):
+        world.add(
+            Actor(
+                worker_id,
+                name,
+                location_id,
+                occupation="transport mechanic",
+                employer_id=employer_id,
+                money=100.0,
+                schedule=[ScheduleEntry(0, 7, "sleep", location_id), ScheduleEntry(8, 16, "work", location_id, priority=10, interruptible=False)],
+            )
+        )
+        world.businesses[employer_id].employees.append(worker_id)
+        world.add(JobOpening(f"opening-{worker_id}", employer_id, "transport mechanic", 8.0, 8, 16))
+    for good_id, name, price in (
+        ("fuel", "Barrelled fuel", 2.0),
+        ("stores", "Vessel and cart stores", 1.0),
+        ("maintenance-parts", "Maintenance parts", 5.0),
+    ):
+        if good_id not in world.goods:
+            world.add(GoodType(good_id, name, price))
     world.create_lot("grain", 40.0, holder_id="staten-farm", owner_id="staten-farm", provenance=("staten harvest",))
     world.create_lot("grain", 20.0, holder_id="newjersey-transshipper", owner_id="newjersey-transshipper", provenance=("new jersey overland supply",))
+    for station_id in ("dock-works", "staten-works", "jersey-works", "jersey-landing-works", "shop-works"):
+        world.create_lot("fuel", 400.0, holder_id=station_id, owner_id=station_id, provenance=(f"{station_id} fuel purchase",))
+        world.create_lot("stores", 80.0, holder_id=station_id, owner_id=station_id, provenance=(f"{station_id} stores purchase",))
+        world.create_lot("maintenance-parts", 40.0, holder_id=station_id, owner_id=station_id, provenance=(f"{station_id} parts purchase",))
 
     for facility in (
         TransportFacility("manhattan-dock", "dock", handling_capacity=1, storage_access_id="warehouse-business"),
@@ -76,6 +118,7 @@ def build_harbor_world(*, seed: int = 0) -> SliceState:
         ("manhattan-sloop", "Manhattan Sloop", "vessel", "dock", "dock-supplier", 20, 1.0),
         ("staten-sloop", "Staten Sloop", "vessel", "staten-landing", "staten-farm", 20, 1.0),
         ("warehouse-cart", "Warehouse Cart", "cart", "newjersey-landing", "newjersey-transshipper", 10, 0.5),
+        ("newjersey-sloop", "New Jersey Sloop", "vessel", "newjersey-transfer", "newjersey-transshipper", 20, 1.0),
         ("dock-cart", "Dock Cart", "cart", "dock", "dock-supplier", 10, 0.5),
         ("merchant-cart", "Merchant Prince Cart", "cart", "shop", "shop-market-cashier", 5, 0.25),
     )
@@ -90,9 +133,13 @@ def build_harbor_world(*, seed: int = 0) -> SliceState:
                 owner_id,
                 capacity=capacity,
                 home_location_id=location_id,
-                fuel=200,
-                fuel_capacity=200,
+                wear_per_hour=0.0003,
+                fuel=24,
+                fuel_capacity=24,
                 fuel_burn_per_hour=0.1 if asset_type == "vessel" else 0.02,
+                supplies={"stores": 20.0},
+                supply_capacity={"stores": 20.0},
+                supply_burn_per_hour={"stores": 0.001},
                 operating_cost_per_hour=cost,
                 operating_cost_payee_id="port-authority",
             ),
@@ -100,8 +147,48 @@ def build_harbor_world(*, seed: int = 0) -> SliceState:
     world.runtime["transport_services"] = (
         ("staten-sloop", "staten-landing-facility", "manhattan-dock"),
         ("manhattan-sloop", "manhattan-dock", "brooklyn-landing-facility"),
-        ("warehouse-cart", "newjersey-landing-facility", "manhattan-workshop"),
         ("dock-cart", "manhattan-dock", "manhattan-workshop"),
+    )
+    world.runtime["freight_plans"] = (
+        {
+            "origin_id": "newjersey-landing",
+            "destination_id": "dock",
+            "good_type_ids": ("grain",),
+            "carrier_plan": ("warehouse-cart", "newjersey-sloop"),
+            "relay_leg_counts": (1, 1),
+            "route_ids": ("newjersey-dock", "newjersey-transfer-dock"),
+            "origin_facility_id": "newjersey-landing-facility",
+            "destination_facility_id": "manhattan-dock",
+        },
+    )
+    world.runtime["asset_service_plans"] = tuple(
+        {
+            "asset_id": asset_id,
+            "service_location_id": service_location,
+            "source_holder_id": station_id,
+            "good_type_id": "fuel",
+            "supply": "fuel",
+            "target_fraction": 0.75,
+            "unit_price": 2.0,
+            "payee_id": station_id,
+            "maintenance_source_holder_id": station_id,
+            "maintenance_good_type_id": "maintenance-parts",
+            "maintenance_worker_id": worker_id,
+            "maintenance_threshold": 0.85,
+            "maintenance_parts": 1.0,
+            "repair_amount": 0.25,
+            "maintenance_unit_price": 5.0,
+            "maintenance_labor_price": 1.0,
+            "maintenance_payee_id": station_id,
+        }
+        for asset_id, service_location, station_id, worker_id in (
+            ("manhattan-sloop", "dock", "dock-works", "dock-mechanic"),
+            ("staten-sloop", "staten-landing", "staten-works", "staten-mechanic"),
+            ("warehouse-cart", "newjersey-landing", "jersey-landing-works", "jersey-landing-mechanic"),
+            ("newjersey-sloop", "newjersey-transfer", "jersey-works", "jersey-mechanic"),
+            ("dock-cart", "dock", "dock-works", "dock-mechanic"),
+            ("merchant-cart", "shop", "shop-works", "shop-mechanic"),
+        )
     )
     # A persistent ordered service participates in the same world clock as
     # freight.  It is also the carrier used by the autonomous price-spread
@@ -138,7 +225,7 @@ def build_harbor_world(*, seed: int = 0) -> SliceState:
     world.runtime["input_flows"] = (
         ("staten-farm", "dock-supplier", "grain", 5.0, 4.0),
         ("dock-supplier", "workshop-business", "grain", 3.0, 4.0),
-        ("newjersey-transshipper", "workshop-business", "grain", 3.0, 4.0),
+        ("newjersey-transshipper", "dock-supplier", "grain", 3.0, 4.0),
         ("dock-supplier", "brooklyn-supplier", "grain", 2.0, 4.0),
         ("workshop-business", "tavern-business", "flour", 1.0, 8.0),
     )
@@ -236,6 +323,21 @@ def harbor_audit(world: World) -> dict[str, Any]:
         "transport_costs_settled": sum(event.data.get("amount", 0.0) for event in world.events if event.kind == "transport_cost_settled"),
         "transport_costs_outstanding": sum(asset.operating_cost_due for asset in world.transport_assets.values()),
         "transport_costs_unpaid_events": sum(1 for event in world.events if event.kind == "transport_cost_unpaid"),
+        "physical_asset_services": {
+            "supplies_purchased": sum(1 for event in world.events if event.kind == "asset_supply_purchased"),
+            "maintenance_operations": sum(1 for event in world.events if event.kind == "asset_maintenance"),
+            "wear_events": sum(1 for event in world.events if event.kind == "asset_wear"),
+            "supply_payments": sum(
+                event.data.get("amount", 0.0)
+                for event in world.events
+                if event.kind == "payment" and "purchased" in event.description
+            ),
+            "maintenance_payments": sum(
+                event.data.get("amount", 0.0)
+                for event in world.events
+                if event.kind == "payment" and "maintenance" in event.description
+            ),
+        },
         "payments": sum(event.data.get("amount", 0.0) for event in world.events if event.kind == "payment"),
         "production_events": sum(1 for event in world.events if event.kind == "production"),
         "work_events": sum(1 for event in world.events if event.kind == "work"),

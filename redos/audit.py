@@ -110,6 +110,7 @@ def validate_world(world: World) -> list[str]:
     for asset in world.transport_assets.values():
         values = (
             asset.capacity,
+            asset.wear_per_hour,
             asset.condition,
             asset.readiness,
             asset.fuel,

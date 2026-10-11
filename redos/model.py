@@ -416,6 +416,7 @@ class TransportAsset:
     location_id: str
     owner_id: str
     capacity: float
+    wear_per_hour: float = 0.0
     home_location_id: str | None = None
     operator_id: str | None = None
     condition: float = 1.0
@@ -1091,6 +1092,9 @@ class World:
                         from .transport import settle_operating_cost
 
                         settle_operating_cost(self, transport_asset.id, causes=(self.events[-1].id,))
+                    from .transport import _record_asset_wear
+
+                    _record_asset_wear(self, transport_asset.id, step, causes=(self.events[-1].id,))
                 if transport_asset.unavailable_reason is not None:
                     continue
             else:
