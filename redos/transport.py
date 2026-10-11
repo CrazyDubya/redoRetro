@@ -426,6 +426,13 @@ def _advance_service(world: World, service: TransportService, hours: float) -> N
         if service.status == "waiting_asset":
             if asset.assigned_shipment_id is not None or not asset.available:
                 return
+            if service.route_ids and service.route_index < len(service.route_ids):
+                # Resource loss can happen after one or more segments of a
+                # planned leg.  Keep the physical route and continue from the
+                # asset's current waypoint instead of rebuilding from the
+                # scheduled stop that originated the leg.
+                service.status = "in_transit"
+                continue
             service.status = "ready"
         if service.status == "blocked":
             # A blocked multi-route leg may have already crossed one or more

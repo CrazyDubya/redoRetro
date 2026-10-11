@@ -263,6 +263,38 @@ class PhysicalAssetServiceTests(unittest.TestCase):
         advance_services(world, 72.0)
         self.assertEqual(asset.location_id, "south")
 
+    def test_two_stop_service_resumes_preserved_multi_segment_route(self):
+        world, _owner, _worker = self._world()
+        asset = world.transport_assets["service-cart"]
+        asset.fuel = 10.0
+        asset.supplies["stores"] = 48.0
+        asset.supply_capacity["stores"] = 72.0
+        asset.supply_burn_per_hour["stores"] = 1.0
+        world.add(GoodType("stores", "Travel stores", 1.0))
+        world.create_lot("stores", 72.0, holder_id="north-market-cashier", owner_id="north-market-cashier", provenance=("north stores",))
+        add_service(world, TransportService("two-stop-service", "service-cart", ("shop", "south")))
+        advance_services(world, 48.0)
+        self.assertEqual(asset.location_id, "north")
+        service = world.transport_services["two-stop-service"]
+        self.assertEqual(service.route_index, 1)
+        advance_services(world, 1.0)
+        self.assertEqual(service.status, "waiting_asset")
+        self.assertEqual(service.route_index, 1)
+        self.assertEqual(asset.location_id, "north")
+        supply_asset_from_inventory(
+            world,
+            asset.id,
+            "stores",
+            72.0,
+            source_holder_id="north-market-cashier",
+            good_type_id="stores",
+            unit_price=1.0,
+            payee_id="north-market-cashier",
+        )
+        advance_services(world, 72.0)
+        self.assertEqual(asset.location_id, "south")
+        self.assertEqual(service.status, "dwelling")
+
     def test_supply_consumes_only_newly_transferred_lots(self):
         world, owner, _worker = self._world()
         world.create_lot("fuel", 1.0, holder_id="service-cart", owner_id=owner.id, provenance=("preexisting asset fuel",))
@@ -281,6 +313,15 @@ class PhysicalAssetServiceTests(unittest.TestCase):
         self.assertEqual(preexisting[0].quantity, 1.0)
         self.assertEqual(world.transport_assets["service-cart"].fuel, 1.0)
         self.assertEqual(world.quantity_held("service-cart", "fuel"), 1.0)
+
+    def test_consume_goods_rejects_duplicate_lot_ids_without_mutation(self):
+        world, _owner, _worker = self._world()
+        lot = world.create_lot("fuel", 5.0, holder_id="service-yard", owner_id="service-yard", provenance=("fuel stock",))
+        before_events = len(world.events)
+        with self.assertRaises(ValueError):
+            world.consume_goods("service-yard", "fuel", 8.0, lot_ids=(lot.id, lot.id))
+        self.assertEqual(lot.quantity, 5.0)
+        self.assertEqual(len(world.events), before_events)
 
     def test_duplicate_fuel_requirements_are_aggregated_before_consumption(self):
         world, _owner, _worker = self._world()

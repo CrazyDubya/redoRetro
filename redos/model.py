@@ -960,6 +960,9 @@ class World:
             raise ValueError("consumption quantity must be positive")
         selected_lots = None
         if lot_ids is not None:
+            lot_ids = tuple(lot_ids)
+            if len(set(lot_ids)) != len(lot_ids):
+                raise ValueError("consumption lot IDs must be unique")
             selected_lots = []
             for lot_id in lot_ids:
                 lot = self.lots.get(lot_id)
