@@ -55,6 +55,16 @@ class BaronTests(unittest.TestCase):
         self.assertEqual(collect_rent(world, property.id), 10.0)
         self.assertEqual(buyer.cash, before_buyer - property.market_value + 10.0)
 
+    def test_re_registering_active_lease_cannot_reset_rent_period(self):
+        world, property, _owner, _buyer = self._world()
+        tenant = world.households["tenant-household"]
+        lease_property(world, property.id, tenant.id)
+        collect_rent(world, property.id)
+        lease_property(world, property.id, tenant.id)
+        with self.assertRaises(ValueError):
+            collect_rent(world, property.id)
+        self.assertTrue(any(event.kind == "lease_unchanged" for event in world.events))
+
     def test_property_market_update_rejects_overflow_without_mutating_state(self):
         world, property, _owner, _buyer = self._world()
         property.market_value = 1e308

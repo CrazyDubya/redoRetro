@@ -17,6 +17,8 @@ from .bank import advance_finance
 from .employment import charge_household_expense, pay_wages
 from .living import Recipe, meet, produce, propagate_information, recollect, revise_belief, tell, witness_event
 from .insurance import advance_claims
+from .merchant import evaluate_merchant_route
+from .ocean import book_ocean_trade
 from .market import buy, refresh_market
 from .model import Actor, World, require_finite
 from .realestate import advance_rents
@@ -241,6 +243,7 @@ def _adjudicate_businesses(world: World) -> None:
         )
         if contract.status == "open":
             _dispatch_commercial_contract(world, contract.id)
+
     for business_id, recipes in world.recipes.items():
         business = world.businesses[business_id]
         if not any(_record_working_day(world, world.actors[actor_id]) for actor_id in business.employees):
@@ -270,6 +273,56 @@ def _adjudicate_businesses(world: World) -> None:
             _dispatch_commercial_contract(world, contract.id)
 
 
+def _adjudicate_merchant_routes(world: World) -> None:
+    """Let registered merchant services act on current physical price spreads.
+
+    A route plan is declarative configuration: it names the service, markets,
+    eligible goods and trading parties.  The quote, stock reservation,
+    carrier assignment and settlement remain the canonical Ocean Trader and
+    freight transitions.
+    """
+    for plan in world.runtime.get("merchant_route_plans", ()):
+        service_id = plan["service_id"]
+        service = world.transport_services.get(service_id)
+        if service is None or service.status not in {"ready", "waiting_asset"}:
+            continue
+        if service.asset_id in {
+            shipment.carrier_id
+            for shipment in world.shipments.values()
+            if shipment.status not in {"delivered", "failed"} and shipment.carrier_id is not None
+        }:
+            continue
+        parties = plan["parties"]
+        try:
+            legs = evaluate_merchant_route(
+                world,
+                service_id,
+                tuple(plan["market_ids"]),
+                tuple(plan["good_type_ids"]),
+                fuel_price=float(plan.get("fuel_price", 0.0)),
+                seller_by_market={market_id: parties[market_id][0] for market_id in plan["market_ids"]},
+            )
+        except (KeyError, ValueError):
+            continue
+        for leg in legs:
+            seller_id = parties[leg.origin_market_id][0]
+            buyer_id = parties[leg.destination_market_id][1]
+            try:
+                book_ocean_trade(
+                    world,
+                    leg.trade,
+                    seller_id=seller_id,
+                    buyer_id=buyer_id,
+                    origin_facility_id=plan["origin_facility_id"],
+                    destination_facility_id=plan["destination_facility_id"],
+                    due_days=int(plan.get("due_days", 4)),
+                    loading_hours=float(plan.get("loading_hours", 1.0)),
+                    unloading_hours=float(plan.get("unloading_hours", 1.0)),
+                    service_id=service_id,
+                )
+            except (KeyError, ValueError):
+                continue
+            break
 def _settle_day(world: World) -> None:
     for business_id in world.businesses:
         pay_wages(world, business_id)
@@ -341,6 +394,7 @@ def adjudicate_hour(world: World, *, external_events: Iterable[DockIncident] = (
                 )
     if world.now.hour == 17:
         _adjudicate_businesses(world)
+    _adjudicate_merchant_routes(world)
 
 
 def advance_world(world: World, hours: float = 1, *, external_events: Iterable[DockIncident] = ()) -> None:
@@ -357,6 +411,11 @@ def advance_world(world: World, hours: float = 1, *, external_events: Iterable[D
         advance_failed_cargo_recovery(world)
         advance_shipments(world, step)
         freight_assets = set(world.runtime.pop("_freight_advanced_assets", set()))
+        # A service that has just reached a stop can accept a profitable
+        # cargo decision before its empty timetable leg departs.  This keeps
+        # service scheduling and commercial booking on the same clock boundary
+        # instead of letting the timetable move the asset past the stop first.
+        _adjudicate_merchant_routes(world)
         # Ordered carrier services are part of the normal world clock.  Tests
         # may advance them directly, but a registered service must also run
         # autonomously during ordinary simulation.  A service-backed carrier

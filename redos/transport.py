@@ -36,16 +36,34 @@ def settle_operating_cost(world: World, asset_id: str, *, causes: tuple[str, ...
     if asset.operating_cost_due <= 1e-9:
         asset.operating_cost_due = 0.0
         asset.accrued_operating_cost = 0.0
+        world.runtime.setdefault("_transport_cost_obligations", {}).pop(asset.id, None)
         return True
-    if asset.operating_cost_payee_id is None:
+    obligations = world.runtime.setdefault("_transport_cost_obligations", {})
+    obligation = obligations.setdefault(
+        asset.id,
+        {"status": "open", "amount": asset.operating_cost_due, "attempts": 0, "last_signature": None},
+    )
+    obligation["amount"] = asset.operating_cost_due
+    obligation["attempts"] = int(obligation.get("attempts", 0)) + 1
+
+    def record_transition(kind: str, description: str, *, reason: str, extra: dict | None = None) -> None:
+        signature = (kind, round(asset.operating_cost_due, 9), reason)
+        if obligation.get("last_signature") == signature:
+            return
         world.record(
-            "transport_cost_payable",
-            f"{asset.id} has an operating cost payable",
-            actors=[asset.owner_id],
-            entities=[asset.id],
+            kind,
+            description,
+            actors=[asset.owner_id] + ([asset.operating_cost_payee_id] if asset.operating_cost_payee_id else []),
+            entities=[asset.id] + ([asset.operating_cost_payee_id] if asset.operating_cost_payee_id else []),
             causes=causes,
-            data={"amount": asset.operating_cost_due, "reason": "no payee configured"},
+            data={"amount": asset.operating_cost_due, "reason": reason, **(extra or {})},
         )
+        obligation["last_signature"] = signature
+
+    if asset.operating_cost_payee_id is None:
+        obligation["status"] = "open"
+        record_transition("transport_cost_payable", f"{asset.id} has an operating cost payable", reason="no payee configured")
+        asset.accrued_operating_cost = 0.0
         return False
     try:
         payment = world.pay(
@@ -56,18 +74,19 @@ def settle_operating_cost(world: World, asset_id: str, *, causes: tuple[str, ...
             reason=f"{asset.id} operating cost",
         )
     except (KeyError, ValueError) as exc:
-        world.record(
+        obligation["status"] = "open"
+        record_transition(
             "transport_cost_unpaid",
             f"{asset.id} could not settle its operating cost",
-            actors=[asset.owner_id],
-            entities=[asset.id, asset.operating_cost_payee_id],
-            causes=causes,
-            data={"amount": asset.operating_cost_due, "reason": str(exc)},
+            reason=str(exc),
         )
+        asset.accrued_operating_cost = 0.0
         return False
     amount = asset.operating_cost_due
     asset.operating_cost_due = 0.0
     asset.accrued_operating_cost = 0.0
+    obligation["status"] = "settled"
+    obligation["last_signature"] = ("transport_cost_settled", round(amount, 9), "settled")
     world.record(
         "transport_cost_settled",
         f"{asset.id} operating cost settled",
@@ -308,8 +327,17 @@ def _advance_service(world: World, service: TransportService, hours: float) -> N
             if not consume_asset_supply(world, asset.id, supply, burn_rate * step):
                 service.status = "waiting_asset"
                 return
-        asset.accrued_operating_cost += asset.operating_cost_per_hour * step
-        asset.operating_cost_due += asset.operating_cost_per_hour * step
+        cost = asset.operating_cost_per_hour * step
+        asset.accrued_operating_cost += cost
+        asset.operating_cost_due += cost
+        if cost > 0:
+            world.record(
+                "transport_cost_accrued",
+                f"{asset.id} accrued scheduled-service cost",
+                actors=[asset.owner_id],
+                entities=[asset.id, service.id],
+                data={"amount": cost, "outstanding": asset.operating_cost_due},
+            )
         service.elapsed_hours += step
         service.journey_elapsed_hours += step
         remaining -= step

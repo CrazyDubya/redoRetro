@@ -81,6 +81,26 @@ def lease_property(world: World, property_id: str, tenant_id: str) -> None:
         raise KeyError(tenant_id)
     if tenant_id == property.owner_id:
         raise ValueError("owner cannot lease property to itself")
+    if property.occupied_by_id == tenant_id:
+        # Re-registering the same active lease is an idempotent administrative
+        # operation.  In particular, it must not erase the timestamp that
+        # protects the current rental period from duplicate collection.
+        world.record(
+            "lease_unchanged",
+            f"{property.id} is already leased to {tenant_id}",
+            actors=[tenant_id, property.owner_id],
+            entities=[property.id],
+        )
+        return
+    previous_tenant = property.occupied_by_id
+    if previous_tenant is not None:
+        world.record(
+            "lease_terminated",
+            f"{property.id} lease to {previous_tenant} ended before reassignment",
+            actors=[previous_tenant, property.owner_id, tenant_id],
+            entities=[property.id],
+            data={"previous_tenant": previous_tenant, "new_tenant": tenant_id},
+        )
     property.occupied_by_id = tenant_id
     property.last_rent_at = None
     world.record("property_leased", f"{property.id} leased to {tenant_id}", actors=[tenant_id, property.owner_id], entities=[property.id])

@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import timedelta
 from typing import Any
 
 from .audit import causal_chain, conservation_errors, inventory_totals, market_balance_errors, validate_world
-from .bank import deposit, open_account
-from .insurance import issue_policy
-from .model import Business, Place, Route, TransportAsset, TransportFacility, World
-from .transport import add_asset, add_facility
+from .bank import deposit, open_account, originate_loan
+from .insurance import approve_claim, file_claim, issue_policy, record_loss
+from .model import Business, Place, Property, Route, TransportAsset, TransportFacility, TransportService, World
+from .realestate import add_property, lease_property
+from .transport import add_asset, add_facility, add_service
 from .vertical import SliceState, build_integrated_world
 
 
@@ -30,6 +32,7 @@ def build_harbor_world(*, seed: int = 0) -> SliceState:
         Route("staten-dock", "staten-landing", "dock", 2.5, 1, "water", "water", ("vessel",)),
         Route("newjersey-dock", "newjersey-landing", "dock", 2.0, 1, "cart", "road", ("cart",)),
         Route("dock-newjersey", "dock", "newjersey-landing", 2.0, 1, "cart", "road", ("cart",)),
+        Route("north-shop", "north", "shop", 2.0, 2, "cart", "road", ("cart",)),
     )
     for route in routes:
         world.add(route)
@@ -43,6 +46,9 @@ def build_harbor_world(*, seed: int = 0) -> SliceState:
             route.mode = "cart"
             route.allowed_modes = ("cart",)
         if {route.origin_id, route.destination_id} == {"dock", "workshop"}:
+            route.mode = "cart"
+            route.allowed_modes = ("cart",)
+        if {route.origin_id, route.destination_id} == {"shop", "north"}:
             route.mode = "cart"
             route.allowed_modes = ("cart",)
 
@@ -71,6 +77,7 @@ def build_harbor_world(*, seed: int = 0) -> SliceState:
         ("staten-sloop", "Staten Sloop", "vessel", "staten-landing", "staten-farm", 20, 1.0),
         ("warehouse-cart", "Warehouse Cart", "cart", "newjersey-landing", "newjersey-transshipper", 10, 0.5),
         ("dock-cart", "Dock Cart", "cart", "dock", "dock-supplier", 10, 0.5),
+        ("merchant-cart", "Merchant Prince Cart", "cart", "shop", "shop-market-cashier", 5, 0.25),
     )
     for asset_id, name, asset_type, location_id, owner_id, capacity, cost in asset_specs:
         add_asset(
@@ -96,6 +103,38 @@ def build_harbor_world(*, seed: int = 0) -> SliceState:
         ("warehouse-cart", "newjersey-landing-facility", "manhattan-workshop"),
         ("dock-cart", "manhattan-dock", "manhattan-workshop"),
     )
+    # A persistent ordered service participates in the same world clock as
+    # freight.  It is also the carrier used by the autonomous price-spread
+    # decision below.
+    add_service(
+        world,
+        TransportService(
+            "merchant-cart-service",
+            "merchant-cart",
+            ("shop", "north"),
+            accepted_good_type_ids=("metals",),
+            timetable_hours=(48.0,),
+        ),
+    )
+    add_facility(world, TransportFacility("merchant-origin-facility", "shop", handling_capacity=1))
+    add_facility(world, TransportFacility("merchant-destination-facility", "north", handling_capacity=1))
+    # One real market lot, owned by the shop firm and held at the public
+    # market place.  Quoting and booking must discover this same lot.
+    world.create_lot("metals", 3.0, holder_id="shop", owner_id="shop-market-cashier", provenance=("merchant surplus",))
+    world.runtime["merchant_route_plans"] = (
+        {
+            "service_id": "merchant-cart-service",
+            "market_ids": ("shop-market", "north-market"),
+            "good_type_ids": ("metals",),
+            "parties": {
+                "shop-market": ("shop-market-cashier", "shop-market-cashier"),
+                "north-market": ("north-market-cashier", "north-market-cashier"),
+            },
+            "origin_facility_id": "merchant-origin-facility",
+            "destination_facility_id": "merchant-destination-facility",
+            "due_days": 4,
+        },
+    )
     world.runtime["input_flows"] = (
         ("staten-farm", "dock-supplier", "grain", 5.0, 4.0),
         ("dock-supplier", "workshop-business", "grain", 3.0, 4.0),
@@ -120,6 +159,29 @@ def build_harbor_world(*, seed: int = 0) -> SliceState:
         coverage_limit=250.0,
         policy_id="harbor-cargo-policy",
     )
+    loan = originate_loan(
+        world,
+        "harbor-bank",
+        "newjersey-transshipper",
+        600.0,
+        annual_interest_rate=0.12,
+        term_days=90,
+        loan_id="harbor-working-capital",
+    )
+    world.runtime["loan_repayment_plans"] = [
+        {"loan_id": loan.id, "amount": 210.0, "period_days": 30, "next_due_at": world.now + timedelta(days=30)},
+    ]
+    premises = Property(
+        "brooklyn-supplier-lease",
+        "Brooklyn supplier premises",
+        "brooklyn-landing",
+        "warehouse",
+        "port-authority",
+        market_value=2_000.0,
+        monthly_rent=25.0,
+    )
+    add_property(world, premises)
+    lease_property(world, premises.id, "brooklyn-supplier")
     return state
 
 
@@ -184,6 +246,30 @@ def harbor_audit(world: World) -> dict[str, Any]:
             "claims": {claim.id: claim.status for claim in world.insurance_claims.values()},
             "approved_exposure": sum(claim.indemnity for claim in world.insurance_claims.values() if claim.status == "approved"),
         },
+        "real_estate": {
+            property.id: {
+                "tenant": property.occupied_by_id,
+                "last_rent_at": property.last_rent_at.isoformat() if property.last_rent_at else None,
+            }
+            for property in world.properties.values()
+        },
+        "scheduled_services": {
+            service.id: {
+                "asset_id": service.asset_id,
+                "status": service.status,
+                "current_stop": service.stop_place_ids[service.current_stop_index],
+                "completed_cycles": service.completed_cycles,
+                "late_hours": service.late_hours,
+            }
+            for service in world.transport_services.values()
+        },
+        "merchant_trades": [event.id for event in world.events if event.kind == "ocean_trade_booked"],
+        "obligations": {
+            "bank_fees": dict(world.runtime.get("_bank_fee_obligations", {})),
+            "loan_repayments": dict(world.runtime.get("_loan_repayment_obligations", {})),
+            "claims": dict(world.runtime.get("_claim_obligations", {})),
+            "transport_costs": dict(world.runtime.get("_transport_cost_obligations", {})),
+        },
         "checkpoints": list(world.runtime.get("harbor_checkpoints", ())),
         "causal_disruptions": {event.id: causal_chain(world, event.id) for event in disruption_events},
         "invariants": {
@@ -212,6 +298,7 @@ def run_harbor_demonstration(*, seed: int = 0, days: int = 90) -> tuple[World, d
     world = build_harbor_world(seed=seed).world
     disruption_start = 20
     disruption_end = 50
+    claim_prepared = False
     for hour in range(days * 24):
         if hour == disruption_start:
             apply_transport_weather(
@@ -224,6 +311,28 @@ def run_harbor_demonstration(*, seed: int = 0, days: int = 90) -> tuple[World, d
         if hour == disruption_end:
             for route_id in ("staten-dock", "dock-staten"):
                 set_route_condition(world, route_id, accessible=True, waterway="calm")
+        # The loss is the only additional authored stimulus.  Assessment,
+        # approval, retry and payment remain ordinary autonomous lifecycle
+        # operations after this event is registered.
+        if hour == 72 and not claim_prepared:
+            loss = record_loss(
+                world,
+                "warehouse-business",
+                loss_kind="cargo damage",
+                covered_risk="cargo",
+                location_id="warehouse",
+                verified_loss_amount=40.0,
+                description="grain was damaged while stored at the warehouse",
+            )
+            claim = file_claim(
+                world,
+                "harbor-cargo-policy",
+                loss_event_id=loss.id,
+                loss_amount=40.0,
+                claim_id="harbor-cargo-claim",
+            )
+            approve_claim(world, claim.id)
+            claim_prepared = True
         advance_world(world, 1)
         if world.now.hour == 0:
             world.runtime.setdefault("harbor_checkpoints", []).append(

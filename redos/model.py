@@ -699,6 +699,34 @@ class World:
     def quantity_held(self, holder_id: str, good_type_id: str) -> float:
         return sum(lot.quantity for lot in self.lots_held_by(holder_id, good_type_id))
 
+    def _lot_is_available_at(self, lot: InventoryLot, place_id: str) -> bool:
+        """Return whether a lot is free stock that may be newly contracted.
+
+        Ownership and reported location are deliberately not sufficient.  A
+        carrier can report its last waypoint while it is carrying an active or
+        failed shipment, and a shipment can report its route origin while its
+        cargo is in transit.  Those lots remain encumbered until the transport
+        obligation explicitly clears them.
+        """
+        if lot.quantity <= 0:
+            return False
+        asset = self.transport_assets.get(lot.holder_id)
+        if asset is not None:
+            if (
+                asset.assigned_shipment_id is not None
+                or asset.reserved_for_shipment_id is not None
+                or asset.cargo_clearance_pending
+                or asset.assignment_kind in {"freight", "cargo_recovery", "reposition"}
+            ):
+                return False
+        shipment = self.shipments.get(lot.holder_id)
+        if shipment is not None and shipment.status not in {"delivered", "returned", "lost"}:
+            return False
+        try:
+            return self.location_of(lot.holder_id) == place_id
+        except KeyError:
+            return False
+
     def quantity_owned_at(self, owner_id: str, place_id: str, good_type_id: str) -> float:
         """Return physical stock owned by ``owner_id`` and present at a place."""
         if place_id not in self.places:
@@ -707,11 +735,7 @@ class World:
         for lot in self.lots.values():
             if lot.good_type_id != good_type_id or lot.owner_id != owner_id or lot.quantity <= 0:
                 continue
-            try:
-                holder_place = self.location_of(lot.holder_id)
-            except KeyError:
-                continue
-            if holder_place == place_id:
+            if self._lot_is_available_at(lot, place_id):
                 total += lot.quantity
         return total
 
@@ -738,7 +762,7 @@ class World:
             and lot.owner_id == owner_id
             and lot.quantity > 0
             and lot.holder_id != to_holder
-            and self.location_of(lot.holder_id) == place_id
+            and self._lot_is_available_at(lot, place_id)
         ]
         if sum(lot.quantity for lot in candidates) + 1e-9 < quantity:
             raise ValueError(f"{owner_id} does not own enough {good_type_id} at {place_id}")

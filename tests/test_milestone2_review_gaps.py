@@ -53,6 +53,15 @@ class Milestone2ReviewGapTests(unittest.TestCase):
         self.assertEqual(len(world.shipments), 1)
         self.assertEqual(world.quantity_held(asset.id, "metals"), 1)
 
+        # The original obligation remains the only legal owner of the cargo;
+        # ordinary world time must later recover it without administrator
+        # intervention, leaving the rejected second sale untouched.
+        advance_world(world, 40)
+        self.assertEqual(world.quantity_held(seller.id, "metals"), 4)
+        self.assertEqual(world.quantity_held(asset.id, "metals"), 0)
+        self.assertEqual(shipment.status, "failed")
+        self.assertEqual(second.status, "open")
+
     def test_changed_freight_duration_normalizes_progress(self):
         world, seller, buyer = self._freight_world()
         contract = create_contract(world, seller.id, buyer.id, "metals", 1, 20, origin_id="shop", destination_id="warehouse", due_days=2)

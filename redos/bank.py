@@ -337,6 +337,51 @@ def balance_sheet(world: World, bank_id: str) -> dict[str, float]:
     return {"cash": bank.cash, "deposits": deposits, "loans": loans, "accrued_loan_interest": accrued_interest}
 
 
+def _advance_repayment_plans(world: World) -> None:
+    """Adjudicate recurring loan installments registered in world state."""
+    obligations = world.runtime.setdefault("_loan_repayment_obligations", {})
+    for plan in world.runtime.get("loan_repayment_plans", ()):
+        loan_id = plan["loan_id"]
+        loan = world.bank_loans.get(loan_id)
+        if loan is None or loan.status != "open":
+            continue
+        due_at = plan.get("next_due_at")
+        if due_at is None or world.now < due_at:
+            continue
+        amount = float(plan["amount"])
+        key = f"{loan_id}:{due_at.isoformat()}"
+        obligation = obligations.setdefault(
+            key,
+            {"loan_id": loan_id, "amount": amount, "status": "open", "attempts": 0, "last_signature": None},
+        )
+        obligation["attempts"] = int(obligation.get("attempts", 0)) + 1
+        try:
+            repaid = repay_loan(world, loan_id, amount)
+        except (KeyError, ValueError) as exc:
+            signature = (round(amount, 9), str(exc))
+            if obligation.get("last_signature") != signature:
+                world.record(
+                    "loan_payment_deferred",
+                    f"scheduled repayment for {loan_id} remains unpaid",
+                    actors=[loan.bank_id, loan.borrower_id],
+                    entities=[loan_id],
+                    data={"amount": amount, "reason": str(exc), "obligation_id": key},
+                )
+                obligation["last_signature"] = signature
+            continue
+        obligation["status"] = "settled"
+        obligation["last_signature"] = ("settled", round(repaid, 9), "settled")
+        world.record(
+            "loan_payment_scheduled",
+            f"scheduled repayment for {loan_id} completed",
+            actors=[loan.bank_id, loan.borrower_id],
+            entities=[loan_id],
+            data={"amount": repaid, "obligation_id": key},
+        )
+        period_days = int(plan.get("period_days", 30))
+        plan["next_due_at"] = due_at + timedelta(days=period_days)
+
+
 def advance_finance(world: World) -> None:
     """Advance live banking obligations on the canonical world clock."""
     for account in world.bank_accounts.values():
@@ -345,28 +390,70 @@ def advance_finance(world: World) -> None:
     for loan in world.bank_loans.values():
         if loan.status == "open":
             accrue_loan_interest(world, loan.id)
+    _advance_repayment_plans(world)
     current_date = world.now.date().isoformat()
     previous_date = world.runtime.get("_finance_calendar_date")
     if previous_date is None:
         world.runtime["_finance_calendar_date"] = current_date
-        return
-    if previous_date == current_date:
-        return
+        previous_date = current_date
+    date_changed = previous_date != current_date
     # The account field represents the monthly service charge used by the
     # donor's demand accounts, so a calendar-month boundary is the billing
     # boundary rather than every simulation hour.
-    if world.now.day == 1:
+    obligations = world.runtime.setdefault("_bank_fee_obligations", {})
+    if date_changed and world.now.day == 1:
         for account in world.bank_accounts.values():
             if account.status != "open" or account.service_charge <= 0:
                 continue
-            try:
-                charge_account_fee(world, account.id)
-            except (KeyError, ValueError) as exc:
+            key = f"{account.id}:{world.now.year:04d}-{world.now.month:02d}"
+            if key not in obligations:
+                obligations[key] = {
+                    "account_id": account.id,
+                    "amount": account.service_charge,
+                    "status": "open",
+                    "attempts": 0,
+                    "last_signature": None,
+                }
+                world.record(
+                    "bank_fee_due",
+                    f"service charge for {account.id} became due",
+                    actors=[account.bank_id, account.customer_id],
+                    entities=[account.id],
+                    data={"amount": account.service_charge, "period": key.rsplit(":", 1)[-1]},
+                )
+    # Outstanding fees remain explicit obligations and are retried on every
+    # ordinary finance tick.  Only a changed failure signature creates a new
+    # causal event, so a long insolvency does not flood the ledger.
+    for key, obligation in obligations.items():
+        if obligation.get("status") != "open":
+            continue
+        account = world.bank_accounts.get(obligation.get("account_id", ""))
+        if account is None or account.status != "open":
+            continue
+        amount = float(obligation["amount"])
+        obligation["attempts"] = int(obligation.get("attempts", 0)) + 1
+        try:
+            charge_account_fee(world, account.id, amount=amount)
+        except (KeyError, ValueError) as exc:
+            reason = str(exc)
+            signature = (round(amount, 9), reason)
+            if obligation.get("last_signature") != signature:
                 world.record(
                     "bank_fee_unpaid",
                     f"service charge for {account.id} remains unpaid",
                     actors=[account.bank_id, account.customer_id],
                     entities=[account.id],
-                    data={"amount": account.service_charge, "reason": str(exc)},
+                    data={"amount": amount, "reason": reason, "obligation_id": key},
                 )
+                obligation["last_signature"] = signature
+        else:
+            obligation["status"] = "settled"
+            obligation["last_signature"] = ("settled", round(amount, 9), "settled")
+            world.record(
+                "bank_fee_settled",
+                f"service charge for {account.id} was settled",
+                actors=[account.bank_id, account.customer_id],
+                entities=[account.id],
+                data={"amount": amount, "obligation_id": key},
+            )
     world.runtime["_finance_calendar_date"] = current_date

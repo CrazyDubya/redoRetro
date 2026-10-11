@@ -24,6 +24,7 @@ def evaluate_merchant_route(
     good_type_ids: tuple[str, ...],
     *,
     fuel_price: float = 0.0,
+    seller_by_market: dict[str, str] | None = None,
 ) -> tuple[MerchantRouteLeg, ...]:
     """Evaluate each leg of a circular service against local price spreads."""
     if len(market_ids) < 2:
@@ -44,6 +45,7 @@ def evaluate_merchant_route(
             service.asset_id,
             eligible_goods,
             fuel_price=fuel_price,
+            seller_id=(seller_by_market or {}).get(origin_market_id),
         )
         if trade is not None and trade.expected_margin > 0:
             legs.append(MerchantRouteLeg(service_id, origin_market_id, destination_market_id, trade))

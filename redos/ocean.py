@@ -47,6 +47,7 @@ def quote_ocean_trade(
     *,
     quantity: float | None = None,
     fuel_price: float = 0.0,
+    seller_id: str | None = None,
 ) -> OceanTradeQuote:
     """Quote a physically possible port-to-port cargo opportunity."""
     if not math.isfinite(fuel_price) or fuel_price < 0:
@@ -61,10 +62,25 @@ def quote_ocean_trade(
     path = route_path(world, origin_market.place_id, destination_market.place_id, mode=asset.asset_type)
     if not path:
         raise ValueError("carrier has no accessible route between the markets")
-    # Public market stock is physical stock at the origin place.  Booking
-    # later narrows this to the seller's owned portion without requiring a
-    # duplicate lot under both the market and the seller.
-    available = world.quantity_held(origin_market.place_id, good_type_id)
+    # If a seller is known, quote the same owner-plus-custody stock that
+    # booking will later reserve.  The public-stock fallback remains useful
+    # for exploratory market screens, but execution must never quote more than
+    # the named seller can physically deliver.
+    available = (
+        world.quantity_owned_at(seller_id, origin_market.place_id, good_type_id)
+        if seller_id is not None
+        else world.quantity_held(origin_market.place_id, good_type_id)
+    )
+    if seller_id is not None:
+        reserved = sum(
+            contract.quantity
+            for contract in world.contracts.values()
+            if contract.seller_id == seller_id
+            and contract.good_type_id == good_type_id
+            and contract.origin_id == origin_market.place_id
+            and contract.status in {"allocated", "in_transit"}
+        )
+        available = max(0.0, available - reserved)
     capacity = max(0.0, asset.capacity - sum(lot.quantity for lot in world.lots_held_by(asset.id)))
     requested = min(available, capacity) if quantity is None else quantity
     if not math.isfinite(requested) or requested <= 0 or requested > available + 1e-9 or requested > capacity + 1e-9:
@@ -95,6 +111,7 @@ def select_ocean_trade(
     good_type_ids: tuple[str, ...],
     *,
     fuel_price: float = 0.0,
+    seller_id: str | None = None,
 ) -> OceanTradeQuote | None:
     """Choose the best currently affordable, physically carryable cargo."""
     quotes: list[OceanTradeQuote] = []
@@ -108,6 +125,7 @@ def select_ocean_trade(
                     good_type_id,
                     carrier_id,
                     fuel_price=fuel_price,
+                    seller_id=seller_id,
                 )
             )
         except (KeyError, ValueError):

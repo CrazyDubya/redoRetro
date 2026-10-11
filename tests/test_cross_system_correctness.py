@@ -2,7 +2,7 @@ import math
 import unittest
 
 from redos.audit import validate_world
-from redos.bank import charge_account_fee, deposit, open_account, originate_loan, repay_loan
+from redos.bank import advance_finance, charge_account_fee, deposit, open_account, originate_loan, repay_loan
 from redos.bootstrap import build_tiny_world
 from redos.enterprise import create_contract, dispatch_contract
 from redos.insider import execute_trade, issue_security
@@ -57,6 +57,20 @@ class CrossSystemCorrectnessTests(unittest.TestCase):
         self.assertAlmostEqual(account.balance, 193.01, places=6)
         self.assertAlmostEqual(customer.cash, 0.0, places=6)
         self.assertAlmostEqual(world.businesses["bank"].cash, 1_200.0, places=6)
+
+    def test_unpaid_bank_fee_is_persistent_and_not_repeatedly_rewritten(self):
+        world = build_tiny_world(seed=2011)
+        world.add(Business("bank", "Harbor Bank", "shop", "bank", cash=1_000.0))
+        account = open_account(world, "bank", "warehouse-business", service_charge=10.0, account_id="unpaid-fee")
+        advance_finance(world)
+        world.advance(days=31)
+        advance_finance(world)
+        advance_finance(world)
+        self.assertEqual(sum(event.kind == "bank_fee_unpaid" for event in world.events), 1)
+        deposit(world, account.id, 20.0)
+        advance_finance(world)
+        self.assertEqual(account.balance, 10.0)
+        self.assertEqual(world.runtime["_bank_fee_obligations"]["unpaid-fee:1770-02"]["status"], "settled")
 
     def test_final_loan_repayment_accrues_elapsed_interest(self):
         world = build_tiny_world(seed=202)
@@ -245,6 +259,8 @@ class CrossSystemCorrectnessTests(unittest.TestCase):
         add_facility(world, TransportFacility("single-lot-origin", "shop", 1))
         add_facility(world, TransportFacility("single-lot-destination", "north", 1))
         trade = quote_ocean_trade(world, "shop-market", "north-market", "metals", "single-lot-cart", quantity=1)
+        with self.assertRaises(ValueError):
+            quote_ocean_trade(world, "shop-market", "north-market", "metals", "single-lot-cart", quantity=2, seller_id=seller.id)
         shipment = book_ocean_trade(world, trade, seller_id=seller.id, buyer_id=buyer.id, origin_facility_id="single-lot-origin", destination_facility_id="single-lot-destination", due_days=4)
         self.assertEqual(world.quantity_held("single-lot-cart", "metals"), 0.0)
         advance_freight(world, 1)

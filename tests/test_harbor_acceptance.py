@@ -11,7 +11,7 @@ class LivingHarborAcceptanceTests(unittest.TestCase):
         world = run(state.world, 30)
         report = harbor_audit(world)
         self.assertEqual(world.now.day, 31)
-        self.assertEqual(len(world.transport_facilities), 6)
+        self.assertEqual(len(world.transport_facilities), 8)
         self.assertGreaterEqual(len(world.transport_assets), 3)
         self.assertTrue(report["journeys"]["completed"])
         self.assertGreater(report["goods_moved"].get("grain", 0), 0)
@@ -70,7 +70,8 @@ class LivingHarborAcceptanceTests(unittest.TestCase):
         baseline_production = sum(event.kind == "production" for event in baseline.events)
         disrupted_production = sum(event.kind == "production" for event in disrupted.events)
         self.assertGreater(baseline_production, disrupted_production)
-        self.assertGreater(baseline.quantity_held("workshop-business", "grain"), disrupted.quantity_held("workshop-business", "grain"))
+        self.assertGreater(baseline.quantity_held("workshop-business", "flour"), disrupted.quantity_held("workshop-business", "flour"))
+        self.assertGreater(disrupted.markets["shop-market"].price_history["bread"][-1], baseline.markets["shop-market"].price_history["bread"][-1])
         self.assertTrue(any(event.kind == "freight_delayed" for event in disrupted.events))
         self.assertEqual(harbor_audit(disrupted)["invariants"]["conservation_errors"], [])
 

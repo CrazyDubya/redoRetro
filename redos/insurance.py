@@ -245,15 +245,28 @@ def insurer_exposure(world: World, insurer_id: str) -> dict[str, float]:
 
 def advance_claims(world: World) -> None:
     """Attempt payment of every approved claim during ordinary settlement."""
+    obligations = world.runtime.setdefault("_claim_obligations", {})
     for claim in world.insurance_claims.values():
         if claim.status != "approved":
             continue
+        obligation = obligations.setdefault(
+            claim.id,
+            {"status": "open", "amount": claim.indemnity, "attempts": 0, "last_signature": None},
+        )
+        obligation["amount"] = claim.indemnity
+        obligation["attempts"] = int(obligation.get("attempts", 0)) + 1
         try:
             settle_claim(world, claim.id)
+            obligation["status"] = "settled"
+            obligation["last_signature"] = ("claim_settled", round(claim.indemnity, 9), "settled")
         except (KeyError, ValueError) as exc:
-            world.record(
-                "claim_payment_deferred",
-                f"approved claim {claim.id} remains unpaid",
-                entities=[claim.id, claim.policy_id],
-                data={"amount": claim.indemnity, "reason": str(exc)},
-            )
+            obligation["status"] = "open"
+            signature = (round(claim.indemnity, 9), str(exc))
+            if obligation.get("last_signature") != signature:
+                world.record(
+                    "claim_payment_deferred",
+                    f"approved claim {claim.id} remains unpaid",
+                    entities=[claim.id, claim.policy_id],
+                    data={"amount": claim.indemnity, "reason": str(exc)},
+                )
+                obligation["last_signature"] = signature
