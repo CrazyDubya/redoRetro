@@ -70,3 +70,13 @@ state without introducing a second simulation model. `execute_once` records a
 command result in canonical runtime state, so retries are no-ops and the
 idempotency ledger survives reload. Round-trip, retry-after-reload, and
 corruption rejection are covered by `tests/test_persistence.py`.
+
+## M3.5 baseline — living neighborhood
+
+The street fixture now connects the existing residences to the Ratzer-derived
+street graph through ordinary feeder routes. With no player commands, the
+canonical runtime can move residents to work and leisure, process commerce,
+create bounded meetings, and propagate witnessed information. The regression
+in `tests/test_street_slice.py` runs thirty days with one external dock
+incident and checks movement, work, meetings, statements, and ordinary tavern
+population. No named patron or witness is injected by the test.

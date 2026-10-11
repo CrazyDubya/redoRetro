@@ -119,6 +119,12 @@ def install_lower_manhattan(world: World) -> StreetDistrict:
         ("wall-shop", "wall-street", "shop"),
         ("pearl-workshop", "pearl-street", "workshop"),
         ("water-warehouse", "water-street", "warehouse"),
+        # Existing harbor homes enter the street graph through ordinary
+        # feeder edges. These prevent the physical door model from forcing
+        # residents onto the old direct interior shortcuts.
+        ("home-a-wall", "home-a", "wall-street"),
+        ("home-b-broad", "home-b", "broad-street"),
+        ("home-c-pearl", "home-c", "pearl-street"),
     )
     route_ids: list[str] = []
     for edge_id, origin_id, destination_id in edges:

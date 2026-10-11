@@ -2,9 +2,11 @@ import unittest
 
 from redos.harbor import build_harbor_world
 from redos.model import Actor
+from redos.runtime import run
 from redos.simulation import tick
 from redos.streets import RATZER_LOC_URL, RATZER_NYPL_URL, build_street_world, street_path
 from redos.transport import board_passenger
+from redos.vertical import default_dock_incident
 
 
 class StreetSliceTests(unittest.TestCase):
@@ -56,6 +58,24 @@ class StreetSliceTests(unittest.TestCase):
         tick(world, return_movement.duration_hours)
         self.assertEqual(returner.location_id, "brooklyn-landing")
         self.assertEqual(world.transport_assets["brooklyn-ferry"].location_id, "brooklyn-landing")
+
+    def test_street_fixture_remains_livable_without_player_commands(self) -> None:
+        state = build_street_world(seed=43)
+        world = run(state.world, 30, external_events=(default_dock_incident(state),))
+
+        self.assertTrue(any(event.kind == "incident" for event in world.events))
+        self.assertGreater(sum(event.kind == "movement" for event in world.events), 20)
+        self.assertGreater(sum(event.kind == "work" for event in world.events), 100)
+        self.assertGreater(sum(event.kind == "meeting" for event in world.events), 20)
+        beliefs = [
+            actor.beliefs["dock-incident"]
+            for actor in world.actors.values()
+            if "dock-incident" in actor.beliefs
+        ]
+        self.assertGreaterEqual(len(beliefs), 2)
+        self.assertGreaterEqual(len(set(beliefs)), 2)
+        self.assertTrue(any(actor.location_id == "tavern" for actor in world.actors.values()))
+        self.assertEqual(world.runtime["street_district"]["source"]["historical_scope"], "names and broad landmark relationships")
 
 
 if __name__ == "__main__":
