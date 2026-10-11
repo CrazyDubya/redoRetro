@@ -18,6 +18,8 @@ class CompletionAuditTests(unittest.TestCase):
         self.assertEqual(report["transport_costs_outstanding"], 0.0)
         self.assertGreater(report["banking"]["interest_events"], 0)
         self.assertGreater(report["banking"]["fee_events"], 0)
+        self.assertGreater(sum(event.kind == "bank_fee_unpaid" for event in world.events), 0)
+        self.assertEqual(report["obligations"]["bank_fees"]["brooklyn-fee-account:1770-02"]["status"], "open")
         self.assertEqual(report["banking"]["loans"]["harbor-working-capital"]["status"], "repaid")
         self.assertGreaterEqual(sum(event.kind == "rent_paid" for event in world.events), 2)
         self.assertEqual(report["insurance"]["claims"]["harbor-cargo-claim"], "paid")

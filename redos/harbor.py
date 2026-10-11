@@ -149,6 +149,16 @@ def build_harbor_world(*, seed: int = 0) -> SliceState:
     world.add(Business("harbor-mutual", "Harbor Mutual", "dock", "insurer", cash=50_000.0))
     account = open_account(world, "harbor-bank", "port-authority", annual_interest_rate=0.0365, service_charge=1.0, account_id="port-authority-account")
     deposit(world, account.id, 1_000.0)
+    # This account is intentionally opened without a deposit.  The ordinary
+    # finance clock must create and retry its monthly fee obligation rather
+    # than silently discarding an unaffordable charge.
+    open_account(
+        world,
+        "harbor-bank",
+        "brooklyn-supplier",
+        service_charge=7.0,
+        account_id="brooklyn-fee-account",
+    )
     issue_policy(
         world,
         "harbor-mutual",
