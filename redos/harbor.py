@@ -171,10 +171,22 @@ def build_harbor_world(*, seed: int = 0) -> SliceState:
             "target_fraction": 0.75,
             "unit_price": 2.0,
             "payee_id": station_id,
+            "supply_plans": (
+                {
+                    "supply": "stores",
+                    "good_type_id": "stores",
+                    "target_fraction": 0.75,
+                    "unit_price": 1.0,
+                    "payee_id": station_id,
+                },
+            ),
             "maintenance_source_holder_id": station_id,
             "maintenance_good_type_id": "maintenance-parts",
             "maintenance_worker_id": worker_id,
-            "maintenance_threshold": 0.85,
+            # Service work is intentionally visible during a 30-day harbor
+            # run; the threshold still leaves normal wear below full condition
+            # rather than repairing every idle asset.
+            "maintenance_threshold": 0.95,
             "maintenance_parts": 1.0,
             "repair_amount": 0.25,
             "maintenance_unit_price": 5.0,
@@ -219,6 +231,10 @@ def build_harbor_world(*, seed: int = 0) -> SliceState:
             },
             "origin_facility_id": "merchant-origin-facility",
             "destination_facility_id": "merchant-destination-facility",
+            "facility_by_market": {
+                "shop-market": "merchant-origin-facility",
+                "north-market": "merchant-destination-facility",
+            },
             "due_days": 4,
         },
     )

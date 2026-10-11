@@ -339,14 +339,25 @@ def _adjudicate_merchant_routes(world: World) -> None:
         for leg in legs:
             seller_id = parties[leg.origin_market_id][0]
             buyer_id = parties[leg.destination_market_id][1]
+            facility_by_market = plan.get("facility_by_market", {})
+            origin_facility_id = facility_by_market.get(
+                leg.origin_market_id,
+                plan.get("origin_facility_id"),
+            )
+            destination_facility_id = facility_by_market.get(
+                leg.destination_market_id,
+                plan.get("destination_facility_id"),
+            )
+            if origin_facility_id is None or destination_facility_id is None:
+                continue
             try:
                 book_ocean_trade(
                     world,
                     leg.trade,
                     seller_id=seller_id,
                     buyer_id=buyer_id,
-                    origin_facility_id=plan["origin_facility_id"],
-                    destination_facility_id=plan["destination_facility_id"],
+                    origin_facility_id=origin_facility_id,
+                    destination_facility_id=destination_facility_id,
                     due_days=int(plan.get("due_days", 4)),
                     loading_hours=float(plan.get("loading_hours", 1.0)),
                     unloading_hours=float(plan.get("unloading_hours", 1.0)),

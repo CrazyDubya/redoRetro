@@ -1,9 +1,10 @@
 import unittest
 import math
+from datetime import timedelta
 
 from redos.bootstrap import build_tiny_world
 from redos.model import Household, Property
-from redos.realestate import add_property, buy_property, collect_rent, lease_property, update_property_market
+from redos.realestate import add_property, advance_rents, buy_property, collect_rent, lease_property, update_property_market
 
 
 class BaronTests(unittest.TestCase):
@@ -74,6 +75,26 @@ class BaronTests(unittest.TestCase):
         self.assertTrue(math.isfinite(property.market_value))
         self.assertEqual(property.market_value, 1e308)
         self.assertEqual(property.value_history, before_history)
+
+    def test_unpaid_rent_is_one_retryable_arrears_obligation(self):
+        world, property, _owner, _buyer = self._world()
+        tenant = world.households["tenant-household"]
+        lease_property(world, property.id, tenant.id)
+        tenant.cash = 0.0
+        advance_rents(world)
+        obligations = world.runtime["_rent_obligations"]
+        open_obligations = [obligation for obligation in obligations.values() if obligation["status"] == "open"]
+        self.assertEqual(len(open_obligations), 1)
+        self.assertEqual(tenant.debt, property.monthly_rent)
+        # A retry on the same due period must not create another debt entry.
+        advance_rents(world)
+        self.assertEqual(len([obligation for obligation in obligations.values() if obligation["status"] == "open"]), 1)
+        tenant.cash = 20.0
+        world.now += timedelta(days=31)
+        advance_rents(world)
+        self.assertEqual(tenant.debt, 0.0)
+        self.assertTrue(any(event.kind == "rent_arrears_settled" for event in world.events))
+        self.assertTrue(all(obligation["status"] == "settled" for obligation in obligations.values()))
 
 
 if __name__ == "__main__":

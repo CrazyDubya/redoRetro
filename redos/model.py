@@ -1033,50 +1033,15 @@ class World:
             available = max(0.0, movement.duration_hours - movement.elapsed_hours)
             step = min(hours, available)
             if transport_asset is not None and step > 1e-9:
-                from .transport import consume_asset_supply
+                from .transport import _asset_resource_requirements, _consume_asset_bundle
 
                 causes = tuple(
                     event.id
                     for event in reversed(self.events)
                     if event.kind == "route_condition_changed" and movement.route_id in event.entities
                 )[:1]
-                requirements = []
-                if transport_asset.fuel_capacity > 0:
-                    requirements.append(("fuel", transport_asset.fuel_burn_per_hour * step))
-                requirements.extend(
-                    (supply, burn_rate * step)
-                    for supply, burn_rate in transport_asset.supply_burn_per_hour.items()
-                )
-                for supply, required in requirements:
-                    available_supply = (
-                        transport_asset.fuel
-                        if supply == "fuel"
-                        else transport_asset.supplies.get(supply, 0.0)
-                    )
-                    if available_supply + 1e-9 < required:
-                        consume_asset_supply(
-                            self,
-                            transport_asset.id,
-                            supply,
-                            required,
-                            causes=causes,
-                        )
-                        self.record(
-                            "passenger_delayed",
-                            f"{movement.actor_id} delayed because {transport_asset.id} lacks {supply}",
-                            actors=[movement.actor_id],
-                            entities=[movement.id, transport_asset.id],
-                        )
-                        break
-                else:
-                    for supply, required in requirements:
-                        consume_asset_supply(
-                            self,
-                            transport_asset.id,
-                            supply,
-                            required,
-                            causes=causes,
-                        )
+                requirements = _asset_resource_requirements(transport_asset, step)
+                if _consume_asset_bundle(self, transport_asset.id, requirements, causes=causes):
                     movement.elapsed_hours += step
                     if transport_asset.operating_cost_per_hour > 0:
                         cost = transport_asset.operating_cost_per_hour * step
@@ -1095,6 +1060,21 @@ class World:
                     from .transport import _record_asset_wear
 
                     _record_asset_wear(self, transport_asset.id, step, causes=(self.events[-1].id,))
+                else:
+                    missing = next(
+                        (
+                            supply
+                            for supply, required in requirements
+                            if (transport_asset.fuel if supply == "fuel" else transport_asset.supplies.get(supply, 0.0)) + 1e-9 < required
+                        ),
+                        "operating resource",
+                    )
+                    self.record(
+                        "passenger_delayed",
+                        f"{movement.actor_id} delayed because {transport_asset.id} lacks {missing}",
+                        actors=[movement.actor_id],
+                        entities=[movement.id, transport_asset.id],
+                    )
                 if transport_asset.unavailable_reason is not None:
                     continue
             else:

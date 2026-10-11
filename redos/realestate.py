@@ -133,8 +133,14 @@ def collect_rent(world: World, property_id: str) -> float:
 
 
 def advance_rents(world: World) -> None:
-    """Collect or record each due rental obligation at the monthly boundary."""
+    """Collect due rent and carry unpaid periods as retryable obligations.
+
+    Rent arrears are not silently re-created as fresh debt on every retry.
+    Each missed period has one persistent obligation, and a later payment can
+    settle current rent plus open arrears in one canonical transfer.
+    """
     attempted = world.runtime.setdefault("_rent_attempts", set())
+    obligations = world.runtime.setdefault("_rent_obligations", {})
     for property in world.properties.values():
         if property.occupied_by_id is None or property.monthly_rent <= 0:
             continue
@@ -144,18 +150,89 @@ def advance_rents(world: World) -> None:
         if period in attempted:
             continue
         attempted.add(period)
+        occupant_id = property.occupied_by_id
+        occupant = world.actors.get(occupant_id) or world.businesses.get(occupant_id) or world.households.get(occupant_id)
+        if occupant is None:
+            continue
+        open_arrears = [
+            obligation
+            for obligation in obligations.values()
+            if obligation["property_id"] == property.id
+            and obligation["tenant_id"] == occupant_id
+            and obligation["status"] == "open"
+        ]
+        arrears_amount = sum(float(obligation["amount"]) for obligation in open_arrears)
+        current_amount = property.monthly_rent
         try:
-            collect_rent(world, property.id)
-        except (KeyError, ValueError) as exc:
-            occupant = world.actors.get(property.occupied_by_id) or world.businesses.get(property.occupied_by_id) or world.households.get(property.occupied_by_id)
-            if occupant is None:
+            # Prefer settling the current period and all outstanding arrears
+            # together.  This makes the debt lifecycle explicit and avoids
+            # inventing a separate financial authority for rent collection.
+            if getattr(occupant, "cash", getattr(occupant, "money", 0.0)) + 1e-9 >= current_amount + arrears_amount:
+                payment = world.pay(
+                    occupant_id,
+                    property.owner_id,
+                    current_amount + arrears_amount,
+                    reason=f"{property.id} rent and arrears",
+                )
+                world.record(
+                    "rent_paid",
+                    f"{occupant_id} paid rent for {property.id}",
+                    actors=[occupant_id, property.owner_id],
+                    entities=[property.id],
+                    causes=(payment.id,),
+                    data={"amount": current_amount, "arrears": arrears_amount},
+                )
+                for obligation in open_arrears:
+                    obligation["status"] = "settled"
+                    obligation["settled_at"] = world.now.isoformat()
+                    world.record(
+                        "rent_arrears_settled",
+                        f"{occupant_id} settled rent arrears for {property.id}",
+                        actors=[occupant_id, property.owner_id],
+                        entities=[property.id],
+                        causes=(payment.id,),
+                        data={"amount": obligation["amount"], "period": obligation["period"]},
+                    )
+                if arrears_amount > 0:
+                    occupant.debt = max(0.0, occupant.debt - arrears_amount)
+                property.last_rent_at = world.now
                 continue
-            occupant.debt += property.monthly_rent
-            property.last_rent_at = world.now
-            world.record(
-                "rent_unpaid",
-                f"{property.occupied_by_id} could not pay rent for {property.id}",
-                actors=[property.occupied_by_id, property.owner_id],
-                entities=[property.id],
-                data={"amount": property.monthly_rent, "reason": str(exc)},
+            # If the tenant can cover only the current period, do not make a
+            # successful current payment disappear behind old arrears.
+            collect_rent(world, property.id)
+            if open_arrears:
+                world.record(
+                    "rent_arrears_deferred",
+                    f"{occupant_id} deferred arrears for {property.id}",
+                    actors=[occupant_id, property.owner_id],
+                    entities=[property.id],
+                    data={"amount": arrears_amount},
+                )
+        except (KeyError, ValueError) as exc:
+            key = f"{property.id}:{occupant_id}:{property.last_rent_at.isoformat() if property.last_rent_at else period}"
+            obligation = obligations.setdefault(
+                key,
+                {
+                    "property_id": property.id,
+                    "tenant_id": occupant_id,
+                    "landlord_id": property.owner_id,
+                    "period": period,
+                    "amount": current_amount,
+                    "status": "open",
+                    "attempts": 0,
+                    "last_reason": None,
+                },
             )
+            obligation["attempts"] = int(obligation.get("attempts", 0)) + 1
+            reason = str(exc)
+            if obligation.get("last_reason") != reason:
+                obligation["last_reason"] = reason
+                occupant.debt += current_amount
+                world.record(
+                    "rent_unpaid",
+                    f"{occupant_id} could not pay rent for {property.id}",
+                    actors=[occupant_id, property.owner_id],
+                    entities=[property.id],
+                    data={"amount": current_amount, "reason": reason, "obligation": key},
+                )
+            property.last_rent_at = world.now

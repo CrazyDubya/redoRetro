@@ -3,9 +3,9 @@ import unittest
 from redos.bootstrap import build_tiny_world
 from redos.equestrian import care_for_horse
 from redos.harbor import build_harbor_world, harbor_audit
-from redos.model import Actor, Business, GoodType, TransportAsset
+from redos.model import Actor, Business, GoodType, TransportAsset, TransportService
 from redos.runtime import run
-from redos.transport import add_asset, service_asset_from_inventory, supply_asset_from_inventory
+from redos.transport import add_asset, add_service, advance_services, service_asset_from_inventory, supply_asset_from_inventory
 
 
 class PhysicalAssetServiceTests(unittest.TestCase):
@@ -93,6 +93,87 @@ class PhysicalAssetServiceTests(unittest.TestCase):
         self.assertEqual(world.quantity_held("service-yard", "maintenance-parts"), 9.0)
         self.assertEqual(owner.cash, 93.0)
         self.assertTrue(any(event.kind == "asset_maintenance" for event in world.events))
+
+    def test_moving_asset_cannot_be_serviced_at_last_waypoint(self):
+        world, owner, worker = self._world()
+        add_service(world, TransportService("moving-service", "service-cart", ("shop", "north")))
+        service = world.transport_services["moving-service"]
+        service.status = "in_transit"
+        service.route_ids = ("shop-north",)
+        with self.assertRaises(ValueError):
+            supply_asset_from_inventory(
+                world,
+                "service-cart",
+                "fuel",
+                1.0,
+                source_holder_id="service-yard",
+                good_type_id="fuel",
+            )
+        with self.assertRaises(ValueError):
+            service_asset_from_inventory(
+                world,
+                "service-cart",
+                source_holder_id="service-yard",
+                parts_good_type_id="maintenance-parts",
+                parts_quantity=1.0,
+                worker_id=worker.id,
+            )
+        service.status = "ready"
+        self.assertEqual(supply_asset_from_inventory(world, "service-cart", "fuel", 1.0, source_holder_id="service-yard", good_type_id="fuel"), 1.0)
+
+    def test_resource_bundle_preflight_does_not_burn_fuel_without_stores(self):
+        world, owner, _worker = self._world()
+        asset = world.transport_assets["service-cart"]
+        asset.fuel = 5.0
+        asset.supplies["stores"] = 0.0
+        asset.supply_capacity["stores"] = 2.0
+        asset.supply_burn_per_hour["stores"] = 1.0
+        add_service(world, TransportService("resource-service", "service-cart", ("shop", "north")))
+        advance_services(world, 1.0)
+        self.assertEqual(asset.fuel, 5.0)
+        self.assertEqual(asset.supplies["stores"], 0.0)
+        self.assertEqual(asset.accrued_operating_cost, 0.0)
+        self.assertEqual(world.transport_services["resource-service"].elapsed_hours, 0.0)
+
+    def test_one_mechanic_cannot_service_two_assets_in_one_hour(self):
+        world, owner, worker = self._world()
+        add_asset(world, TransportAsset("second-cart", "Second Cart", "cart", "shop", owner.id, capacity=2, condition=0.5))
+        service_asset_from_inventory(
+            world,
+            "service-cart",
+            source_holder_id="service-yard",
+            parts_good_type_id="maintenance-parts",
+            parts_quantity=1.0,
+            worker_id=worker.id,
+        )
+        with self.assertRaises(ValueError):
+            service_asset_from_inventory(
+                world,
+                "second-cart",
+                source_holder_id="service-yard",
+                parts_good_type_id="maintenance-parts",
+                parts_quantity=1.0,
+                worker_id=worker.id,
+            )
+
+    def test_service_causality_uses_event_ids_not_inventory_lot_ids(self):
+        world, _owner, _worker = self._world()
+        supply_asset_from_inventory(
+            world,
+            "service-cart",
+            "fuel",
+            1.0,
+            source_holder_id="service-yard",
+            good_type_id="fuel",
+            unit_price=2.0,
+            payee_id="service-yard",
+        )
+        purchase = next(event for event in reversed(world.events) if event.kind == "asset_supply_purchased")
+        caused = {event.id for event in world.events}
+        self.assertTrue(purchase.causes)
+        self.assertTrue(set(purchase.causes) <= caused)
+        self.assertTrue(any(event.kind == "goods_transfer" and event.id in purchase.causes for event in world.events))
+        self.assertTrue(any(event.kind == "consumption" and event.id in purchase.causes for event in world.events))
 
     def test_harbor_uses_multimodal_transfer_and_autonomous_service(self):
         world = build_harbor_world(seed=602).world

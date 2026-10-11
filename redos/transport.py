@@ -255,6 +255,32 @@ def _service_next_stop(service: TransportService) -> str:
     return service.stop_place_ids[(service.current_stop_index + 1) % len(service.stop_place_ids)]
 
 
+def _asset_is_stationary(world: World, asset_id: str, *, at_place_id: str | None = None) -> bool:
+    """Return whether an asset is physically stopped and serviceable.
+
+    ``location_id`` is the last reached waypoint, not a continuous position.
+    A vehicle may therefore report the station it left while it is already in
+    motion.  Every physical service path uses this predicate so freight,
+    passengers, repositioning, recovery, and ordered services share one
+    location rule.
+    """
+    asset = world.transport_assets[asset_id]
+    if asset.assigned_shipment_id is not None:
+        return False
+    if asset.assignment_kind in {"freight", "passenger", "reposition", "cargo_recovery"}:
+        return False
+    if asset.return_route_ids and asset.return_route_index < len(asset.return_route_ids):
+        return False
+    if any(movement.transport_asset_id == asset_id for movement in world.movements.values()):
+        return False
+    if any(
+        service.asset_id == asset_id and service.status == "in_transit"
+        for service in world.transport_services.values()
+    ):
+        return False
+    return at_place_id is None or asset.location_id == at_place_id
+
+
 def _begin_service_leg(world: World, service: TransportService) -> bool:
     asset = world.transport_assets[service.asset_id]
     if asset.assigned_shipment_id is not None or not asset.available:
@@ -345,14 +371,11 @@ def _advance_service(world: World, service: TransportService, hours: float) -> N
             asset.location_id = route.destination_id
             continue
         step = min(remaining, available)
-        if asset.fuel_capacity > 0 and not consume_asset_supply(world, asset.id, "fuel", asset.fuel_burn_per_hour * step):
+        requirements = _asset_resource_requirements(asset, step)
+        if not _consume_asset_bundle(world, asset.id, requirements):
             service.status = "waiting_asset"
             world.record("transport_service_unavailable", f"{service.id} stopped because {asset.id} lacks fuel", entities=[service.id, asset.id])
             return
-        for supply, burn_rate in asset.supply_burn_per_hour.items():
-            if not consume_asset_supply(world, asset.id, supply, burn_rate * step):
-                service.status = "waiting_asset"
-                return
         cost = asset.operating_cost_per_hour * step
         asset.accrued_operating_cost += cost
         asset.operating_cost_due += cost
@@ -516,7 +539,15 @@ def release_asset(
     return asset
 
 
-def replenish_asset(world: World, asset_id: str, supply: str, quantity: float, *, source_id: str | None = None) -> float:
+def replenish_asset(
+    world: World,
+    asset_id: str,
+    supply: str,
+    quantity: float,
+    *,
+    source_id: str | None = None,
+    source_kind: str = "administrative",
+) -> float:
     """Add fuel or a named operational supply to a persistent asset.
 
     This remains the low-level provisioning primitive used by focused tests and
@@ -542,7 +573,12 @@ def replenish_asset(world: World, asset_id: str, supply: str, quantity: float, *
     ):
         asset.available = True
         asset.unavailable_reason = None
-    world.record("asset_replenished", f"{asset.id} received {added} {supply}", entities=[asset.id, *( [source_id] if source_id else [])], data={"supply": supply, "quantity": added})
+    world.record(
+        "asset_replenished",
+        f"{asset.id} received {added} {supply}",
+        entities=[asset.id, *([source_id] if source_id else [])],
+        data={"supply": supply, "quantity": added, "source_kind": source_kind},
+    )
     return added
 
 
@@ -573,6 +609,8 @@ def supply_asset_from_inventory(
     asset = world.transport_assets[asset_id]
     if source_holder_id == asset_id:
         raise ValueError("an asset cannot supply itself")
+    if not _asset_is_stationary(world, asset_id):
+        raise ValueError("moving or assigned asset cannot be supplied")
     if world.location_of(source_holder_id) != asset.location_id:
         raise ValueError("supply source is not co-located with the asset")
     if good_type_id not in world.goods:
@@ -606,13 +644,15 @@ def supply_asset_from_inventory(
         causes=payment_causes,
         reason=f"{asset.id} received physical {supply} from {source_holder_id}",
     )
+    transfer_event = world.events[-1]
     consumed = world.consume_goods(
         asset.id,
         good_type_id,
         added,
-        causes=(*causes, *(lot.id for lot in transferred)),
+        causes=(transfer_event.id,),
         reason=f"{asset.id} consumed purchased {supply}",
     )
+    consumption_event = world.events[-1]
     if supply == "fuel":
         asset.fuel += added
     else:
@@ -625,7 +665,7 @@ def supply_asset_from_inventory(
         f"{asset.id} purchased {added:g} {supply}",
         actors=[asset.owner_id, payee],
         entities=[asset.id, source_holder_id, good_type_id, *consumed],
-        causes=payment_causes,
+        causes=(*payment_causes, transfer_event.id, consumption_event.id),
         data={"supply": supply, "quantity": added, "unit_price": unit_price, "total": total},
     )
     return added
@@ -657,7 +697,7 @@ def service_asset_from_inventory(
         raise ValueError("maintenance quantities and prices are invalid")
     asset = world.transport_assets[asset_id]
     worker = world.actors[worker_id]
-    if asset.assigned_shipment_id is not None or asset.cargo_clearance_pending:
+    if not _asset_is_stationary(world, asset_id) or asset.cargo_clearance_pending:
         raise ValueError("assigned or uncleared asset cannot be serviced")
     if asset.condition >= 1.0 - 1e-9:
         return 0.0
@@ -665,6 +705,10 @@ def service_asset_from_inventory(
         raise ValueError("maintenance worker is not physically present")
     if not worker.current_activity or not worker.current_activity.startswith("work"):
         raise ValueError("maintenance requires a worker on shift")
+    worker_usage = world.runtime.setdefault("_asset_service_worker_hours", {})
+    worker_key = (worker_id, world.now.isoformat())
+    if worker_usage.get(worker_key, 0.0) >= 1.0 - 1e-9:
+        raise ValueError("maintenance worker has no remaining service capacity")
     if world.location_of(source_holder_id) != asset.location_id:
         raise ValueError("maintenance source is not co-located with the asset")
     if world.quantity_held(source_holder_id, parts_good_type_id) + 1e-9 < parts_quantity:
@@ -689,24 +733,27 @@ def service_asset_from_inventory(
         causes=payment_causes,
         reason=f"{asset.id} received maintenance parts",
     )
+    transfer_event = world.events[-1]
     consumed = world.consume_goods(
         asset.id,
         parts_good_type_id,
         parts_quantity,
-        causes=(*causes, *(lot.id for lot in transferred)),
+        causes=(transfer_event.id,),
         reason=f"{asset.id} consumed maintenance parts",
     )
+    consumption_event = world.events[-1]
     before = asset.condition
     asset.condition = min(1.0, asset.condition + repair_amount)
     if asset.condition > 0 and asset.readiness > 0 and asset.assigned_shipment_id is None:
         asset.available = True
         asset.unavailable_reason = None
+    worker_usage[worker_key] = worker_usage.get(worker_key, 0.0) + 1.0
     world.record(
         "asset_maintenance",
         f"{asset.id} was repaired by {worker_id}",
         actors=[asset.owner_id, worker_id, payee],
         entities=[asset.id, source_holder_id, parts_good_type_id, *consumed],
-        causes=payment_causes,
+        causes=(*payment_causes, transfer_event.id, consumption_event.id),
         data={"condition_before": before, "condition_after": asset.condition, "parts": parts_quantity, "labor_hours": 1.0, "total": total},
     )
     return asset.condition - before
@@ -716,13 +763,17 @@ def advance_asset_services(world: World) -> None:
     """Run declarative, physical refuelling and maintenance plans."""
     for plan in world.runtime.get("asset_service_plans", ()):
         asset = world.transport_assets.get(plan["asset_id"])
-        if asset is None or asset.location_id != plan["service_location_id"] or asset.assigned_shipment_id is not None:
+        if asset is None or not _asset_is_stationary(world, asset.id, at_place_id=plan["service_location_id"]):
             continue
+        supply_plans = []
         if plan.get("supply"):
-            supply = plan["supply"]
+            supply_plans.append(plan)
+        supply_plans.extend(plan.get("supply_plans", ()))
+        for supply_plan in supply_plans:
+            supply = supply_plan["supply"]
             capacity = asset.fuel_capacity if supply == "fuel" else asset.supply_capacity.get(supply, 0.0)
             current = asset.fuel if supply == "fuel" else asset.supplies.get(supply, 0.0)
-            target = capacity * float(plan.get("target_fraction", 0.75))
+            target = capacity * float(supply_plan.get("target_fraction", 0.75))
             if capacity > 0 and current + 1e-9 < target:
                 try:
                     supply_asset_from_inventory(
@@ -730,10 +781,10 @@ def advance_asset_services(world: World) -> None:
                         asset.id,
                         supply,
                         target - current,
-                        source_holder_id=plan["source_holder_id"],
-                        good_type_id=plan["good_type_id"],
-                        unit_price=float(plan.get("unit_price", 0.0)),
-                        payee_id=plan.get("payee_id"),
+                        source_holder_id=supply_plan.get("source_holder_id", plan["source_holder_id"]),
+                        good_type_id=supply_plan["good_type_id"],
+                        unit_price=float(supply_plan.get("unit_price", 0.0)),
+                        payee_id=supply_plan.get("payee_id"),
                     )
                 except (KeyError, ValueError):
                     pass
@@ -755,7 +806,7 @@ def advance_asset_services(world: World) -> None:
                 pass
 
 
-def repair_asset(world: World, asset_id: str, amount: float = 1.0) -> float:
+def repair_asset(world: World, asset_id: str, amount: float = 1.0, *, source_kind: str = "administrative") -> float:
     require_finite(amount, "repair amount")
     if amount <= 0:
         raise ValueError("repair amount must be positive")
@@ -765,7 +816,7 @@ def repair_asset(world: World, asset_id: str, amount: float = 1.0) -> float:
     if asset.condition > 0 and asset.readiness > 0 and asset.assigned_shipment_id is None:
         asset.available = True
         asset.unavailable_reason = None
-    world.record("asset_repaired", f"{asset.id} repaired", entities=[asset.id], data={"amount": repaired})
+    world.record("asset_repaired", f"{asset.id} repaired", entities=[asset.id], data={"amount": repaired, "source_kind": source_kind})
     return repaired
 
 
@@ -791,6 +842,53 @@ def consume_asset_supply(world: World, asset_id: str, supply: str, quantity: flo
             return False
         asset.supplies[supply] = available - quantity
     world.record("asset_supply_consumed", f"{asset.id} consumed {quantity} {supply}", entities=[asset.id], causes=causes, data={"supply": supply, "quantity": quantity})
+    return True
+
+
+def _asset_resource_requirements(asset: TransportAsset, hours: float) -> tuple[tuple[str, float], ...]:
+    require_finite(hours, "asset operating hours")
+    if hours <= 0:
+        return ()
+    requirements: list[tuple[str, float]] = []
+    if asset.fuel_capacity > 0:
+        requirements.append(("fuel", asset.fuel_burn_per_hour * hours))
+    requirements.extend((supply, burn_rate * hours) for supply, burn_rate in asset.supply_burn_per_hour.items())
+    return tuple((supply, quantity) for supply, quantity in requirements if quantity > 1e-12)
+
+
+def _consume_asset_bundle(
+    world: World,
+    asset_id: str,
+    requirements: tuple[tuple[str, float], ...],
+    *,
+    causes: tuple[str, ...] = (),
+) -> bool:
+    """Preflight and consume all operating resources as one step.
+
+    No resource is debited until every required resource is available.  This
+    is intentionally shared by freight, ordered services, repositioning and
+    passenger movement so a failed step cannot burn fuel without advancing.
+    """
+    asset = world.transport_assets[asset_id]
+    for supply, quantity in requirements:
+        require_finite(quantity, f"{supply} operating requirement")
+        if quantity < 0:
+            raise ValueError("operating requirements cannot be negative")
+        available = asset.fuel if supply == "fuel" else asset.supplies.get(supply, 0.0)
+        if available + 1e-9 < quantity:
+            asset.available = False
+            asset.unavailable_reason = f"{supply} exhausted"
+            world.record(
+                "asset_unavailable",
+                f"{asset.id} lacks {supply}",
+                entities=[asset.id],
+                causes=causes,
+                data={"supply": supply, "required": quantity, "available": available},
+            )
+            return False
+    for supply, quantity in requirements:
+        if not consume_asset_supply(world, asset_id, supply, quantity, causes=causes):
+            raise RuntimeError("asset resource bundle changed during atomic consumption")
     return True
 
 
@@ -1348,13 +1446,9 @@ def _advance_asset_reposition(world: World, asset: TransportAsset, hours: float)
             asset.location_id = route.destination_id
             continue
         step = min(remaining, available)
-        if asset.fuel_capacity > 0 and not consume_asset_supply(world, asset.id, "fuel", asset.fuel_burn_per_hour * step):
+        if not _consume_asset_bundle(world, asset.id, _asset_resource_requirements(asset, step)):
             asset.unavailable_reason = "fuel exhausted during return"
             return
-        for supply, burn_rate in asset.supply_burn_per_hour.items():
-            if not consume_asset_supply(world, asset.id, supply, burn_rate * step):
-                asset.unavailable_reason = f"{supply} exhausted during return"
-                return
         asset.accrued_operating_cost += asset.operating_cost_per_hour * step
         asset.operating_cost_due += asset.operating_cost_per_hour * step
         if asset.operating_cost_per_hour > 0:
@@ -1612,22 +1706,18 @@ def _advance_freight_step(world: World, hours: float) -> list[str]:
                     world.record("freight_arrived_leg", f"{shipment.id} reached {route.destination_id}", entities=[shipment.id, asset.id, route.id])
                     continue
                 step = min(remaining, available)
-                if asset.fuel_capacity > 0 and not consume_asset_supply(
-                    world,
-                    asset.id,
-                    "fuel",
-                    asset.fuel_burn_per_hour * step,
-                    causes=tuple(world.contracts[shipment.contract_id].causal_event_ids[-1:]),
-                ):
-                    _fail(world, shipment, "carrier fuel exhausted")
-                    break
-                resource_failure = False
-                for supply, burn_rate in asset.supply_burn_per_hour.items():
-                    if not consume_asset_supply(world, asset.id, supply, burn_rate * step, causes=tuple(world.contracts[shipment.contract_id].causal_event_ids[-1:])):
-                        _fail(world, shipment, f"carrier {supply} exhausted")
-                        resource_failure = True
-                        break
-                if resource_failure:
+                causes = tuple(world.contracts[shipment.contract_id].causal_event_ids[-1:])
+                requirements = _asset_resource_requirements(asset, step)
+                if not _consume_asset_bundle(world, asset.id, requirements, causes=causes):
+                    missing = next(
+                        (
+                            supply
+                            for supply, quantity in requirements
+                            if (asset.fuel if supply == "fuel" else asset.supplies.get(supply, 0.0)) + 1e-9 < quantity
+                        ),
+                        "operating resource",
+                    )
+                    _fail(world, shipment, f"carrier {missing} exhausted")
                     break
                 cost = asset.operating_cost_per_hour * step
                 asset.accrued_operating_cost += cost
