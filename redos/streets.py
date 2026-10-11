@@ -12,7 +12,7 @@ They are not a claim to have reconstructed every 1770 parcel or frontage.
 
 from __future__ import annotations
 
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass
 
 from .harbor import build_harbor_world
@@ -159,6 +159,39 @@ def build_street_world(*, seed: int = 0) -> SliceState:
     state = build_harbor_world(seed=seed)
     install_lower_manhattan(state.world)
     return state
+
+
+def street_audit(world: World) -> dict[str, object]:
+    """Return a JSON-ready acceptance report for the bounded street world."""
+    from .audit import conservation_errors, market_balance_errors, validate_world
+
+    district = world.runtime.get("street_district", {})
+    event_counts = Counter(event.kind for event in world.events)
+    present_by_site = Counter(actor.location_id for actor in world.actors.values())
+    beliefs = {
+        actor.id: actor.beliefs.get("dock-incident")
+        for actor in world.actors.values()
+        if "dock-incident" in actor.beliefs
+    }
+    return {
+        "schema": "redos.street-audit.v1",
+        "now": world.now.isoformat(),
+        "seed": world.seed,
+        "district": {
+            "street_nodes": list(district.get("street_nodes", ())),
+            "visitable_sites": list(district.get("visitable_sites", ())),
+            "interior_sites": list(district.get("interior_sites", ())),
+            "source": district.get("source", {}),
+        },
+        "events": dict(sorted(event_counts.items())),
+        "population_by_site": dict(sorted(present_by_site.items())),
+        "incident_beliefs": beliefs,
+        "invariants": {
+            "validation_errors": validate_world(world),
+            "conservation_errors": conservation_errors(world),
+            "market_balance_errors": market_balance_errors(world),
+        },
+    }
 
 
 def street_path(world: World, origin_id: str, destination_id: str) -> list[Route]:

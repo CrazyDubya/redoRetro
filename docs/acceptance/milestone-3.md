@@ -87,7 +87,25 @@ population. No named patron or witness is injected by the test.
 responsive top-down client reads `/api/state` and submits idempotent commands
 to `/api/command`. The browser controls the existing `merchant` actor through
 the shared action gateway for movement, inspection, conversation, purchase,
-delivery, door passage, and waiting. `tests/test_web.py` exercises the actual
-HTTP server, verifies physical movement rather than teleportation, and checks
-that retrying a command does not create a second mutation. No Docker, cloud
+delivery, door passage, ferry boarding, and waiting. `tests/test_web.py`
+exercises the actual HTTP server, verifies physical movement rather than
+teleportation, confirms a canonical crossing to Brooklyn, and checks that
+retrying a command does not create a second mutation. No Docker, cloud
 service, frontend dependency, or player-only world state is required.
+
+## M3.7 baseline — acceptance
+
+`street_audit(world)` produces the machine-readable district report used by
+`tests/test_milestone3_acceptance.py`. The 30-day run uses one deterministic
+external dock incident and otherwise advances through the ordinary runtime. It
+checks movement, work, bounded meetings, divergent incident beliefs, market
+conservation, world validation, and JSON serialization. The full pytest suite
+retains the Milestone 2 harbor and bidirectional-ferry regressions, while the
+HTTP tests cover the playable journey.
+
+Milestone 3 known limitations are deliberately bounded: the Ratzer-derived
+street graph remains an approximate slice rather than a parcel survey; the
+browser server is a single local session with no authentication or
+multiplayer; snapshots are trusted local SQLite application data; and the
+client is intentionally a thin standard-library demo rather than a production
+frontend build.

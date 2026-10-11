@@ -7,7 +7,7 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
-from .actions import converse, deliver, inspect as inspect_object, move, purchase
+from .actions import board, converse, deliver, inspect as inspect_object, move, purchase
 from .interactions import enter_door
 from .model import Actor, Movement, World
 from .persistence import execute_once
@@ -61,6 +61,15 @@ def _state(session: WebSession) -> dict:
             for obj in world.situated_objects.values()
         ],
         "present_actors": present,
+        "passenger_services": [
+            {"asset_id": service[0], "boarding_place_id": service[1], "destination_id": service[2]}
+            for service in world.runtime.get("passenger_services", ())
+            if len(service) >= 3
+            and service[1] == player.location_id
+            and service[0] in world.transport_assets
+            and world.transport_assets[service[0]].location_id == player.location_id
+            and world.transport_assets[service[0]].available
+        ],
         "markets": [
             {"id": market.id, "place_id": market.place_id, "goods": sorted(market.fixed_prices)}
             for market in world.markets.values()
@@ -158,6 +167,7 @@ function render() {
   const quick=document.querySelector('#quick'); quick.innerHTML='';
   const wait=document.createElement('button'); wait.textContent='Wait 1 hour'; wait.onclick=()=>command('wait',{hours:1}); quick.appendChild(wait);
   const market=state.markets.find(m=>m.place_id===p.location_id); if (market) { const buy=document.createElement('button'); buy.textContent='Buy 1 metal'; buy.onclick=()=>command('purchase',{market_id:market.id,good_type_id:'metals',quantity:1}); quick.appendChild(buy); }
+  state.passenger_services.forEach(service=>{ const b=document.createElement('button'); b.className='secondary'; b.textContent=`Board ${service.asset_id} → ${service.destination_id}`; b.onclick=()=>command('board',{asset_id:service.asset_id,destination_id:service.destination_id}); quick.appendChild(b); });
 }
 api('/api/state').then(body=>{state=body; render();}).catch(error=>log(error.message));
 </script></body></html>"""
@@ -234,6 +244,8 @@ class _Handler(BaseHTTPRequestHandler):
                 request["good_type_id"],
                 float(request["quantity"]),
             )
+        if action == "board":
+            return execute_once(world, command_id, board, world, session.player_id, request["asset_id"], request["destination_id"])
         if action == "deliver":
             return execute_once(
                 world,

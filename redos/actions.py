@@ -12,6 +12,7 @@ from .interactions import interact_with_object, reachable_path
 from .living import tell
 from .market import TradeQuote, buy
 from .model import Statement, World, require_finite
+from .transport import board_passenger
 
 
 def move(world: World, actor_id: str, destination_id: str):
@@ -78,6 +79,11 @@ def purchase(
 ) -> TradeQuote:
     """Buy physical stock through the existing canonical market operation."""
     return buy(world, buyer_id, market_id, good_type_id, quantity, offer=offer)
+
+
+def board(world: World, actor_id: str, asset_id: str, destination_id: str):
+    """Board a physically present passenger carrier through the movement kernel."""
+    return board_passenger(world, actor_id, asset_id, destination_id)
 
 
 def deliver(
