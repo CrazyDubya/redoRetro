@@ -740,6 +740,8 @@ class World:
             return False
         asset = self.transport_assets.get(lot.holder_id)
         if asset is not None:
+            if self.asset_is_physically_moving(asset.id):
+                return False
             if (
                 asset.assigned_shipment_id is not None
                 or asset.reserved_for_shipment_id is not None
@@ -754,6 +756,29 @@ class World:
             return self.location_of(lot.holder_id) == place_id
         except KeyError:
             return False
+
+    def asset_is_physically_moving(self, asset_id: str) -> bool:
+        """Return whether a transport asset is between physical waypoints."""
+        if any(movement.transport_asset_id == asset_id for movement in self.movements.values()):
+            return True
+        asset = self.transport_assets.get(asset_id)
+        if asset is None:
+            return False
+        for service in self.transport_services.values():
+            if service.asset_id != asset_id:
+                continue
+            if service.status == "in_transit":
+                return True
+            if service.status not in {"blocked", "waiting_asset"}:
+                continue
+            if service.route_index >= len(service.route_ids):
+                continue
+            if service.elapsed_hours > 1e-9:
+                return True
+            route = self.routes.get(service.route_ids[service.route_index])
+            if route is None or asset.location_id != route.origin_id:
+                return True
+        return False
 
     def quantity_owned_at(self, owner_id: str, place_id: str, good_type_id: str) -> float:
         """Return physical stock owned by ``owner_id`` and present at a place."""
@@ -926,17 +951,29 @@ class World:
         good_type_id: str,
         quantity: float,
         *,
+        lot_ids: Iterable[str] | None = None,
         causes: Iterable[str] = (),
         reason: str = "goods consumed",
     ) -> list[str]:
         require_finite(quantity, "consumption quantity")
         if quantity <= 0:
             raise ValueError("consumption quantity must be positive")
-        if self.quantity_held(holder_id, good_type_id) + 1e-9 < quantity:
+        selected_lots = None
+        if lot_ids is not None:
+            selected_lots = []
+            for lot_id in lot_ids:
+                lot = self.lots.get(lot_id)
+                if lot is None or lot.holder_id != holder_id or lot.good_type_id != good_type_id or lot.quantity <= 0:
+                    raise ValueError(f"{holder_id} cannot consume lot {lot_id}")
+                selected_lots.append(lot)
+            if sum(lot.quantity for lot in selected_lots) + 1e-9 < quantity:
+                raise ValueError(f"specified lots do not contain enough {good_type_id}")
+        elif self.quantity_held(holder_id, good_type_id) + 1e-9 < quantity:
             raise ValueError(f"{holder_id} does not hold enough {good_type_id}")
         remaining = quantity
         consumed: list[str] = []
-        for lot in list(self.lots_held_by(holder_id, good_type_id)):
+        lots_to_consume = selected_lots if selected_lots is not None else list(self.lots_held_by(holder_id, good_type_id))
+        for lot in lots_to_consume:
             used = min(remaining, lot.quantity)
             lot.quantity -= used
             consumed.append(lot.id)

@@ -214,6 +214,74 @@ class PhysicalAssetServiceTests(unittest.TestCase):
                 good_type_id="stores",
             )
 
+    def test_goods_aboard_moving_ordered_service_are_not_saleable_at_origin(self):
+        world, owner, _worker = self._world()
+        world.create_lot("fuel", 1.0, holder_id="service-cart", owner_id=owner.id, provenance=("preloaded fuel",))
+        add_service(world, TransportService("cargo-service", "service-cart", ("shop", "north")))
+        self.assertEqual(world.quantity_owned_at(owner.id, "shop", "fuel"), 1.0)
+        advance_services(world, 0.5)
+        self.assertEqual(world.quantity_owned_at(owner.id, "shop", "fuel"), 0.0)
+        with self.assertRaises(ValueError):
+            world.transfer_owned_goods_at(
+                owner.id,
+                "shop",
+                "fuel",
+                1.0,
+                to_holder="service-yard",
+            )
+
+    def test_stalled_ordered_service_can_be_serviced_at_reached_intermediate_waypoint(self):
+        world, _owner, _worker = self._world()
+        asset = world.transport_assets["service-cart"]
+        asset.fuel = 10.0
+        asset.supplies["stores"] = 48.0
+        asset.supply_capacity["stores"] = 72.0
+        asset.supply_burn_per_hour["stores"] = 1.0
+        world.add(GoodType("stores", "Travel stores", 1.0))
+        world.create_lot("stores", 72.0, holder_id="north-market-cashier", owner_id="north-market-cashier", provenance=("north stores",))
+        add_service(world, TransportService("multi-leg-service", "service-cart", ("shop", "north", "south")))
+        advance_services(world, 48.0)
+        self.assertEqual(asset.location_id, "north")
+        advance_services(world, 1.0)
+        service = world.transport_services["multi-leg-service"]
+        self.assertEqual(service.status, "waiting_asset")
+        self.assertEqual(service.elapsed_hours, 0.0)
+        self.assertEqual(asset.location_id, "north")
+        self.assertEqual(
+            supply_asset_from_inventory(
+                world,
+                asset.id,
+                "stores",
+                72.0,
+                source_holder_id="north-market-cashier",
+                good_type_id="stores",
+                unit_price=1.0,
+                payee_id="north-market-cashier",
+            ),
+            72.0,
+        )
+        advance_services(world, 72.0)
+        self.assertEqual(asset.location_id, "south")
+
+    def test_supply_consumes_only_newly_transferred_lots(self):
+        world, owner, _worker = self._world()
+        world.create_lot("fuel", 1.0, holder_id="service-cart", owner_id=owner.id, provenance=("preexisting asset fuel",))
+        supply_asset_from_inventory(
+            world,
+            "service-cart",
+            "fuel",
+            1.0,
+            source_holder_id="service-yard",
+            good_type_id="fuel",
+            unit_price=2.0,
+            payee_id="service-yard",
+        )
+        preexisting = [lot for lot in world.lots_held_by("service-cart", "fuel") if lot.provenance == ("preexisting asset fuel",)]
+        self.assertEqual(len(preexisting), 1)
+        self.assertEqual(preexisting[0].quantity, 1.0)
+        self.assertEqual(world.transport_assets["service-cart"].fuel, 1.0)
+        self.assertEqual(world.quantity_held("service-cart", "fuel"), 1.0)
+
     def test_duplicate_fuel_requirements_are_aggregated_before_consumption(self):
         world, _owner, _worker = self._world()
         asset = world.transport_assets["service-cart"]

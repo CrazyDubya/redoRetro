@@ -271,24 +271,7 @@ def _asset_is_stationary(world: World, asset_id: str, *, at_place_id: str | None
         return False
     if asset.return_route_ids and asset.return_route_index < len(asset.return_route_ids):
         return False
-    if any(movement.transport_asset_id == asset_id for movement in world.movements.values()):
-        return False
-    if any(
-        service.asset_id == asset_id
-        and (
-            service.status == "in_transit"
-            or (
-                service.status in {"blocked", "waiting_asset"}
-                and service.route_index < len(service.route_ids)
-                and (
-                    service.route_index > 0
-                    or service.elapsed_hours > 1e-9
-                    or service.journey_elapsed_hours > 1e-9
-                )
-            )
-        )
-        for service in world.transport_services.values()
-    ):
+    if world.asset_is_physically_moving(asset_id):
         return False
     return at_place_id is None or asset.location_id == at_place_id
 
@@ -372,7 +355,7 @@ def _commit_inventory_consumption(
                 reason=f"{target_holder_id} purchased physical supply",
             )
         payment_causes = (*causes, payment.id) if payment is not None else causes
-        world.transfer_owned_goods_at(
+        transferred = world.transfer_owned_goods_at(
             seller_id,
             place_id,
             good_type_id,
@@ -387,6 +370,7 @@ def _commit_inventory_consumption(
             target_holder_id,
             good_type_id,
             quantity,
+            lot_ids=tuple(lot.id for lot in transferred),
             causes=(transfer_event.id,),
             reason=consumption_reason,
         )
