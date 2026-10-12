@@ -82,6 +82,9 @@ def purchase(
     offer: float | None = None,
 ) -> TradeQuote:
     """Buy physical stock through the existing canonical market operation."""
+    buyer = world.actors[buyer_id]
+    if buyer.traveling_to is not None:
+        raise ValueError("buyer must be stationary for purchase")
     return buy(world, buyer_id, market_id, good_type_id, quantity, offer=offer)
 
 

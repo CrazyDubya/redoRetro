@@ -191,6 +191,8 @@ def save_snapshot(world: World, path: str | Path, *, snapshot_id: str = "latest"
     payload = _payload_for(world)
     checksum = hashlib.sha256(payload).hexdigest()
     info = SnapshotInfo(snapshot_id, SNAPSHOT_SCHEMA_VERSION, world.now.isoformat(), checksum, len(world.events))
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
     connection = _connect(path)
     try:
         with connection:

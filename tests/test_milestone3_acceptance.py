@@ -72,12 +72,24 @@ class Milestone3AcceptanceTests(unittest.TestCase):
             advance_world(baseline, 1)
             advance_world(intervened, 1)
 
+        # The intervention must continue to affect the autonomous economy,
+        # not only the player's immediate balance and inventory.  The shop's
+        # market cashier has a different post-run balance after the same
+        # runtime has adjudicated the changed market state.
+        for _ in range(42):
+            advance_world(baseline, 1)
+            advance_world(intervened, 1)
+
         self.assertEqual(baseline.seed, intervened.seed)
         self.assertNotEqual(
             baseline.actors["merchant"].money,
             intervened.actors["merchant"].money,
         )
         self.assertGreater(intervened.quantity_held("merchant", "metals"), baseline.quantity_held("merchant", "metals"))
+        self.assertNotEqual(
+            baseline.businesses["shop-market-cashier"].cash,
+            intervened.businesses["shop-market-cashier"].cash,
+        )
 
 
 if __name__ == "__main__":

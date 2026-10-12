@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import copy
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import RLock
-import os
-import tempfile
 from urllib.parse import urlsplit
 
 from .actions import board, converse, deliver, inspect as inspect_object, move, purchase
@@ -19,12 +18,14 @@ from .runtime import advance_world
 from .streets import build_street_world
 
 
+DEFAULT_SNAPSHOT_PATH = Path.home() / ".redos" / "living-streets.sqlite3"
+
+
 @dataclass
 class WebSession:
     world: World
     player_id: str = "merchant"
-    snapshot_path: Path | None = None
-    owns_snapshot_path: bool = False
+    snapshot_path: Path = DEFAULT_SNAPSHOT_PATH
     lock: RLock = field(default_factory=RLock, repr=False)
 
 
@@ -56,6 +57,13 @@ def _state(session: WebSession) -> dict:
         for obj in world.situated_objects.values()
         if obj.place_id == player.location_id
     ]
+    known_event_ids: set[str] = set()
+    for knowledge_key, observation_id in player.knowledge.items():
+        if knowledge_key in world.events:
+            known_event_ids.add(knowledge_key)
+        observation = world.observations.get(observation_id)
+        if observation is not None:
+            known_event_ids.add(observation.event_id)
     journal = [
         {
             "id": event.id,
@@ -64,7 +72,7 @@ def _state(session: WebSession) -> dict:
             "description": event.description,
         }
         for event in world.events[-40:]
-        if player.id in event.actors or player.location_id in event.entities
+        if player.id in event.actors or event.id in known_event_ids
     ]
     return {
         "now": world.now.isoformat(),
@@ -114,6 +122,16 @@ def _state(session: WebSession) -> dict:
 def _advance_player(world: World, hours: float) -> float:
     advance_world(world, hours)
     return hours
+
+
+def _reload_marker(path: str) -> dict[str, object]:
+    """Validate a saved world before the session swaps to it."""
+    load_snapshot(path)
+    return {"reloaded": True, "snapshot_path": path}
+
+
+def _restart_marker(seed: int) -> dict[str, object]:
+    return {"restarted": True, "seed": seed}
 
 
 def _result_summary(result: object) -> dict | None:
@@ -268,20 +286,20 @@ class _Handler(BaseHTTPRequestHandler):
         if not isinstance(command_id, str) or not command_id:
             raise ValueError("command_id is required")
         if action == "save":
-            if session.snapshot_path is None:
-                descriptor, filename = tempfile.mkstemp(prefix="redos-web-", suffix=".sqlite3")
-                os.close(descriptor)
-                session.snapshot_path = Path(filename)
-                session.owns_snapshot_path = True
-            return save_snapshot(world, session.snapshot_path)
+            return execute_once(world, command_id, save_snapshot, world, str(session.snapshot_path))
         if action == "reload":
-            if session.snapshot_path is None:
-                raise ValueError("no saved snapshot exists")
+            result = execute_once(world, command_id, _reload_marker, str(session.snapshot_path))
+            entry = copy.deepcopy(world.runtime["command_ledger"][command_id])
             session.world = load_snapshot(session.snapshot_path)
-            return {"reloaded": True, "snapshot_path": str(session.snapshot_path)}
+            session.world.runtime.setdefault("command_ledger", {})[command_id] = entry
+            return result
         if action == "restart":
-            session.world = build_street_world(seed=world.seed).world
-            return {"restarted": True, "seed": session.world.seed}
+            result = execute_once(world, command_id, _restart_marker, world.seed)
+            ledger = copy.deepcopy(world.runtime.get("command_ledger", {}))
+            restarted = build_street_world(seed=world.seed).world
+            restarted.runtime["command_ledger"] = ledger
+            session.world = restarted
+            return result
         if action == "move":
             return execute_once(world, command_id, move, world, session.player_id, request["destination_id"])
         if action == "inspect":
@@ -334,11 +352,7 @@ class _RedosServer(ThreadingHTTPServer):
     session: WebSession
 
     def server_close(self) -> None:
-        snapshot_path = self.session.snapshot_path
-        owns_snapshot_path = self.session.owns_snapshot_path
         super().server_close()
-        if owns_snapshot_path and snapshot_path is not None:
-            snapshot_path.unlink(missing_ok=True)
 
 
 def create_server(
@@ -350,7 +364,8 @@ def create_server(
     snapshot_path: str | Path | None = None,
 ) -> _RedosServer:
     """Create a local server; caller owns its lifecycle and may call shutdown."""
-    session = WebSession(world or build_street_world(seed=0).world, player_id, Path(snapshot_path) if snapshot_path else None)
+    resolved_snapshot_path = Path(snapshot_path) if snapshot_path is not None else DEFAULT_SNAPSHOT_PATH
+    session = WebSession(world or build_street_world(seed=0).world, player_id, resolved_snapshot_path)
     if player_id not in session.world.actors:
         raise KeyError(player_id)
     server = _RedosServer((host, port), _Handler)
