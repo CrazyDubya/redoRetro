@@ -101,6 +101,11 @@ teleportation, confirms a canonical crossing to Brooklyn, and checks that
 retrying a command does not create a second mutation. No Docker, cloud
 service, frontend dependency, or player-only world state is required.
 
+The browser-selected actor remains canonical world state, but is excluded
+from autonomous NPC schedule and household-need adjudication. Its issued
+movement, including multi-leg continuation, still advances through the same
+runtime movement authority as every other actor.
+
 ## M3.7 baseline — acceptance
 
 `street_audit(world)` produces the machine-readable district report used by

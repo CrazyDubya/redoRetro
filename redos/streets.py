@@ -200,6 +200,10 @@ def build_street_world(*, seed: int = 0) -> SliceState:
     """Build the harbor plus the first directly explorable street district."""
     state = build_harbor_world(seed=seed)
     install_lower_manhattan(state.world)
+    # The browser-controlled actor is still a canonical person, but is not an
+    # autonomous NPC. Runtime movement continues to advance normally,
+    # including multi-leg destinations issued through shared actions.
+    state.world.runtime["player_actor_id"] = "merchant"
     return state
 
 

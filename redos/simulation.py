@@ -316,6 +316,8 @@ def _tick_step(world: World, hours: float) -> None:
                     )
                     actor.journey_destination_id = None
                 continue
+        if actor.id == world.runtime.get("player_actor_id"):
+            continue
         if actor.active_task and actor.task_target_location_id:
             actor.current_activity = actor.intention = actor.active_task
             if actor.location_id != actor.task_target_location_id:

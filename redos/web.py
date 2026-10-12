@@ -130,6 +130,18 @@ def _reload_marker(path: str) -> dict[str, object]:
     return {"reloaded": True, "snapshot_path": path}
 
 
+def _save_snapshot_result(world: World, path: str) -> dict[str, object]:
+    """Save a JSON-safe command result for the canonical command ledger."""
+    info = save_snapshot(world, path)
+    return {
+        "snapshot_id": info.snapshot_id,
+        "schema_version": info.schema_version,
+        "created_at": info.created_at,
+        "checksum": info.checksum,
+        "event_count": info.event_count,
+    }
+
+
 def _restart_marker(seed: int) -> dict[str, object]:
     return {"restarted": True, "seed": seed}
 
@@ -212,7 +224,6 @@ function render() {
   document.querySelector('#clock').textContent = state.now;
   document.querySelector('#status').textContent = `${p.name} · ${p.location_id}${p.traveling_to ? ` → ${p.traveling_to}` : ''} · $${p.money.toFixed(2)} · ${state.event_count} causal events`;
   const map = document.querySelector('#map'); map.innerHTML = '';
-  const byId = Object.fromEntries(state.places.map(place => [place.id, place]));
   state.places.forEach(place => {
     const x = place.x + 1.5, y = 2.4 - place.y;
     const circle = document.createElementNS('http://www.w3.org/2000/svg','circle'); circle.setAttribute('cx',x); circle.setAttribute('cy',y); circle.setAttribute('r',place.id === p.location_id ? '.13' : '.09'); circle.setAttribute('fill',place.id === p.location_id ? '#b4492f' : '#526b68'); circle.classList.add('site'); circle.onclick=()=>command('move',{destination_id:place.id}); map.appendChild(circle);
@@ -269,6 +280,8 @@ class _Handler(BaseHTTPRequestHandler):
             if length <= 0 or length > 64 * 1024:
                 raise ValueError("invalid request size")
             request = json.loads(self.rfile.read(length))
+            if not isinstance(request, dict):
+                raise ValueError("request body must be a JSON object")
             with self.server.session.lock:
                 result = self._command(request)
                 state = _state(self.server.session)
@@ -286,7 +299,7 @@ class _Handler(BaseHTTPRequestHandler):
         if not isinstance(command_id, str) or not command_id:
             raise ValueError("command_id is required")
         if action == "save":
-            return execute_once(world, command_id, save_snapshot, world, str(session.snapshot_path))
+            return execute_once(world, command_id, _save_snapshot_result, world, str(session.snapshot_path))
         if action == "reload":
             result = execute_once(world, command_id, _reload_marker, str(session.snapshot_path))
             entry = copy.deepcopy(world.runtime["command_ledger"][command_id])

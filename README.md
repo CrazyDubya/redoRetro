@@ -7,8 +7,10 @@ The initial donor work is recorded in [docs/donors/adventureland.md](docs/donors
 Run the tests with:
 
 ```sh
-python -m unittest discover -s tests -v
+python3 -m pytest -q
 ```
+
+The CI gate also runs Ruff against `redos` and `tests`.
 
 The package has no runtime dependencies.
 

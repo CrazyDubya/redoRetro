@@ -80,6 +80,7 @@ def _food_trip_conflicts_with_work(world: World, actor: Actor, shop_id: str) -> 
 
 def _adjudicate_food_need(world: World) -> None:
     shop_id = world.runtime.get("food_market_place", "shop")
+    player_actor_id = world.runtime.get("player_actor_id")
     for household in world.households.values():
         members = [world.actors[actor_id] for actor_id in household.members]
         desired = max(1.0, len(members) * 1.5)
@@ -93,6 +94,7 @@ def _adjudicate_food_need(world: World) -> None:
             (
                 actor
                 for actor in members
+                if actor.id != player_actor_id
                 if actor.traveling_to is None
                 and actor.active_task is None
                 and not _has_near_term_obligation(world, actor)
@@ -112,6 +114,8 @@ def _adjudicate_food_need(world: World) -> None:
 
 
 def _complete_food_task(world: World, actor: Actor) -> None:
+    if actor.id == world.runtime.get("player_actor_id"):
+        return
     if actor.active_task not in {"acquire food", "return with food"} or actor.traveling_to is not None:
         return
     household = world.households.get(actor.household_id or "")
@@ -155,6 +159,8 @@ def _complete_food_task(world: World, actor: Actor) -> None:
 
 
 def _consume_meal(world: World, actor: Actor) -> None:
+    if actor.id == world.runtime.get("player_actor_id"):
+        return
     if actor.current_activity != "eat" or actor.traveling_to is not None:
         return
     household = world.households.get(actor.household_id or "")

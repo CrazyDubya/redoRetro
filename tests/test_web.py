@@ -119,7 +119,14 @@ class WebClientTests(unittest.TestCase):
         for index in range(3):
             waited = self._post({"command_id": f"wait-{index}", "action": "wait", "hours": 1})
         self.assertEqual(waited["state"]["player"]["location_id"], "royal-exchange")
-        self.assertEqual(waited["state"]["player"]["traveling_to"], "broad-street")
+        self.assertIsNone(waited["state"]["player"]["traveling_to"])
+
+    def test_player_wait_does_not_trigger_autonomous_npc_needs(self) -> None:
+        entered = self._post({"command_id": "player-door", "action": "enter_door", "door_id": "shop-door"})
+        self.assertEqual(entered["state"]["player"]["traveling_to"], "wall-street")
+        arrived = self._post({"command_id": "player-door-wait", "action": "wait", "hours": 1})
+        self.assertEqual(arrived["state"]["player"]["location_id"], "wall-street")
+        self.assertIsNone(arrived["state"]["player"]["traveling_to"])
 
     def test_browser_can_board_the_canonical_bidirectional_ferry(self) -> None:
         world = build_street_world(seed=35).world
@@ -199,6 +206,8 @@ class WebClientTests(unittest.TestCase):
         self.assertEqual(saved["result"]["schema_version"], 2)
         repeated_save = self._post({"command_id": "save-1", "action": "save"})
         self.assertEqual(repeated_save["result"], saved["result"])
+        second_save = self._post({"command_id": "save-2", "action": "save"})
+        self.assertEqual(second_save["result"]["schema_version"], 2)
         moved = self._post({"command_id": "move-before-reload", "action": "move", "destination_id": "royal-exchange"})
         self.assertEqual(moved["state"]["player"]["traveling_to"], "wall-street")
         reloaded = self._post({"command_id": "reload-1", "action": "reload"})
@@ -212,6 +221,17 @@ class WebClientTests(unittest.TestCase):
         request = Request(
             self.base + "/api/command",
             data=json.dumps({"command_id": "restart-1", "action": "save"}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with self.assertRaises(HTTPError) as error:
+            urlopen(request)
+        self.assertEqual(error.exception.code, 400)
+
+    def test_browser_rejects_non_object_command_bodies(self) -> None:
+        request = Request(
+            self.base + "/api/command",
+            data=b"[]",
             headers={"Content-Type": "application/json"},
             method="POST",
         )
