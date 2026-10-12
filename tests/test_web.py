@@ -228,6 +228,32 @@ class WebClientTests(unittest.TestCase):
             urlopen(request)
         self.assertEqual(error.exception.code, 400)
 
+    def test_system_command_retries_do_not_discard_intervening_state(self) -> None:
+        self._post({"command_id": "stable-save", "action": "save"})
+        self._post({"command_id": "stable-move-before-reload", "action": "move", "destination_id": "royal-exchange"})
+        self._post({"command_id": "stable-reload", "action": "reload"})
+        moved_after_reload = self._post(
+            {"command_id": "stable-move-after-reload", "action": "move", "destination_id": "royal-exchange"}
+        )
+        retried_reload = self._post({"command_id": "stable-reload", "action": "reload"})
+        self.assertEqual(retried_reload["state"]["player"]["traveling_to"], moved_after_reload["state"]["player"]["traveling_to"])
+
+        self._post({"command_id": "stable-restart", "action": "restart"})
+        moved_after_restart = self._post(
+            {"command_id": "stable-move-after-restart", "action": "move", "destination_id": "royal-exchange"}
+        )
+        retried_restart = self._post({"command_id": "stable-restart", "action": "restart"})
+        self.assertEqual(retried_restart["state"]["player"]["traveling_to"], moved_after_restart["state"]["player"]["traveling_to"])
+
+    def test_retried_save_does_not_overwrite_the_saved_world(self) -> None:
+        self._post({"command_id": "original-save", "action": "save"})
+        self._post({"command_id": "original-reload", "action": "reload"})
+        self._post({"command_id": "state-after-save", "action": "move", "destination_id": "royal-exchange"})
+        self._post({"command_id": "original-save", "action": "save"})
+        restored = self._post({"command_id": "fresh-reload", "action": "reload"})
+        self.assertIsNone(restored["state"]["player"]["traveling_to"])
+        self.assertEqual(restored["state"]["player"]["location_id"], "shop")
+
     def test_browser_rejects_non_object_command_bodies(self) -> None:
         request = Request(
             self.base + "/api/command",
@@ -256,6 +282,14 @@ class WebClientTests(unittest.TestCase):
                 )
                 with urlopen(request):
                     pass
+                request = Request(
+                    first_base + "/api/command",
+                    data=json.dumps({"command_id": "durable-reload", "action": "reload"}).encode(),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urlopen(request):
+                    pass
             finally:
                 first.shutdown()
                 first.server_close()
@@ -268,13 +302,21 @@ class WebClientTests(unittest.TestCase):
             try:
                 request = Request(
                     second_base + "/api/command",
+                    data=json.dumps({"command_id": "post-restart-move", "action": "move", "destination_id": "royal-exchange"}).encode(),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urlopen(request):
+                    pass
+                request = Request(
+                    second_base + "/api/command",
                     data=json.dumps({"command_id": "durable-reload", "action": "reload"}).encode(),
                     headers={"Content-Type": "application/json"},
                     method="POST",
                 )
                 with urlopen(request) as response:
                     reloaded = json.loads(response.read())
-                self.assertEqual(reloaded["state"]["player"]["location_id"], "shop")
+                self.assertEqual(reloaded["state"]["player"]["traveling_to"], "wall-street")
             finally:
                 second.shutdown()
                 second.server_close()

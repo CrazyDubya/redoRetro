@@ -13,7 +13,14 @@ from urllib.parse import urlsplit
 from .actions import board, converse, deliver, inspect as inspect_object, move, purchase
 from .interactions import enter_door
 from .model import Actor, Movement, World
-from .persistence import execute_once, load_snapshot, save_snapshot
+from .persistence import (
+    execute_once,
+    execute_once_with_status,
+    execute_save_once,
+    load_command_ledger,
+    load_snapshot,
+    persist_command_entry,
+)
 from .runtime import advance_world
 from .streets import build_street_world
 
@@ -128,18 +135,6 @@ def _reload_marker(path: str) -> dict[str, object]:
     """Validate a saved world before the session swaps to it."""
     load_snapshot(path)
     return {"reloaded": True, "snapshot_path": path}
-
-
-def _save_snapshot_result(world: World, path: str) -> dict[str, object]:
-    """Save a JSON-safe command result for the canonical command ledger."""
-    info = save_snapshot(world, path)
-    return {
-        "snapshot_id": info.snapshot_id,
-        "schema_version": info.schema_version,
-        "created_at": info.created_at,
-        "checksum": info.checksum,
-        "event_count": info.event_count,
-    }
 
 
 def _restart_marker(seed: int) -> dict[str, object]:
@@ -299,17 +294,26 @@ class _Handler(BaseHTTPRequestHandler):
         if not isinstance(command_id, str) or not command_id:
             raise ValueError("command_id is required")
         if action == "save":
-            return execute_once(world, command_id, _save_snapshot_result, world, str(session.snapshot_path))
+            result, _executed = execute_save_once(world, command_id, session.snapshot_path)
+            return result
         if action == "reload":
-            result = execute_once(world, command_id, _reload_marker, str(session.snapshot_path))
+            result, executed = execute_once_with_status(world, command_id, _reload_marker, str(session.snapshot_path))
+            if not executed:
+                return result
+            candidate = load_snapshot(session.snapshot_path)
             entry = copy.deepcopy(world.runtime["command_ledger"][command_id])
-            session.world = load_snapshot(session.snapshot_path)
-            session.world.runtime.setdefault("command_ledger", {})[command_id] = entry
+            persist_command_entry(session.snapshot_path, command_id, entry)
+            candidate.runtime.setdefault("command_ledger", {})[command_id] = entry
+            session.world = candidate
             return result
         if action == "restart":
-            result = execute_once(world, command_id, _restart_marker, world.seed)
+            result, executed = execute_once_with_status(world, command_id, _restart_marker, world.seed)
+            if not executed:
+                return result
             ledger = copy.deepcopy(world.runtime.get("command_ledger", {}))
             restarted = build_street_world(seed=world.seed).world
+            entry = ledger[command_id]
+            persist_command_entry(session.snapshot_path, command_id, entry)
             restarted.runtime["command_ledger"] = ledger
             session.world = restarted
             return result
@@ -381,6 +385,7 @@ def create_server(
     session = WebSession(world or build_street_world(seed=0).world, player_id, resolved_snapshot_path)
     if player_id not in session.world.actors:
         raise KeyError(player_id)
+    session.world.runtime.setdefault("command_ledger", {}).update(load_command_ledger(resolved_snapshot_path))
     server = _RedosServer((host, port), _Handler)
     server.session = session
     return server

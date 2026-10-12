@@ -2,9 +2,11 @@ import json
 from time import perf_counter
 import unittest
 
-from redos.actions import move, purchase
+from redos.actions import inspect as inspect_object, move, purchase
+from redos.market import quote
 from redos.persistence import execute_once
-from redos.runtime import run
+from redos.model import ScheduleEntry
+from redos.runtime import advance_world, run
 from redos.streets import build_street_world, street_audit
 from redos.vertical import default_dock_incident
 
@@ -37,16 +39,20 @@ class Milestone3AcceptanceTests(unittest.TestCase):
         intervened = build_street_world(seed=52).world
 
         execute_once(
+            baseline,
+            "tape-inspect-shop",
+            inspect_object,
+            baseline,
+            "merchant",
+            "shop-counter",
+        )
+        execute_once(
             intervened,
             "tape-inspect-shop",
-            lambda world, actor_id: world.record(
-                "tape_inspection",
-                "player inspected the shop counter",
-                actors=[actor_id],
-                entities=["shop-counter"],
-            ).id,
+            inspect_object,
             intervened,
             "merchant",
+            "shop-counter",
         )
         execute_once(
             intervened,
@@ -86,10 +92,27 @@ class Milestone3AcceptanceTests(unittest.TestCase):
             intervened.actors["merchant"].money,
         )
         self.assertGreater(intervened.quantity_held("merchant", "metals"), baseline.quantity_held("merchant", "metals"))
-        self.assertNotEqual(
-            baseline.businesses["shop-market-cashier"].cash,
-            intervened.businesses["shop-market-cashier"].cash,
-        )
+        baseline_quote = quote(baseline, "shop-market", "metals", 1.0, side="buy")
+        intervened_quote = quote(intervened, "shop-market", "metals", 1.0, side="buy")
+        self.assertNotEqual(baseline_quote.unit_price, intervened_quote.unit_price)
+        self.assertTrue(any(event.kind == "market_refresh" for event in intervened.events))
+
+    def test_player_movement_wins_over_schedule_and_household_need(self) -> None:
+        world = build_street_world(seed=53).world
+        player = world.actors["merchant"]
+        player.schedule = [ScheduleEntry(0, 24, "work", "shop", priority=10, interruptible=False)]
+        household = world.households[player.household_id]
+        if world.quantity_held(household.id, "bread"):
+            world.consume_goods(household.id, "bread", world.quantity_held(household.id, "bread"), reason="player-control test")
+
+        move(world, player.id, "royal-exchange")
+        for _ in range(3):
+            advance_world(world, 1)
+
+        self.assertEqual(player.location_id, "royal-exchange")
+        self.assertIsNone(player.traveling_to)
+        self.assertIsNone(player.active_task)
+        self.assertIsNone(player.schedule_override_until)
 
 
 if __name__ == "__main__":

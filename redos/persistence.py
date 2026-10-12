@@ -179,6 +179,76 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         )
         """
     )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS command_ledger (
+            command_id TEXT PRIMARY KEY,
+            operation TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            result TEXT NOT NULL
+        )
+        """
+    )
+
+
+def _encoded_command_result(entry: dict[str, Any]) -> str:
+    result = entry.get("result")
+    return json.dumps(_encode_value(result), sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def load_command_ledger(path: str | Path) -> dict[str, dict[str, Any]]:
+    """Load durable command identities without replacing the canonical world."""
+    path = Path(path)
+    if not path.exists():
+        return {}
+    connection = _connect(path)
+    try:
+        with connection:
+            _ensure_schema(connection)
+        rows = connection.execute(
+            "SELECT command_id, operation, fingerprint, result FROM command_ledger"
+        ).fetchall()
+    finally:
+        connection.close()
+    ledger: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        result = _decode_value(json.loads(row["result"], parse_constant=_reject_json_constant))
+        ledger[row["command_id"]] = {
+            "operation": row["operation"],
+            "fingerprint": row["fingerprint"],
+            "result": result,
+        }
+    return ledger
+
+
+def persist_command_entry(path: str | Path, command_id: str, entry: dict[str, Any]) -> None:
+    """Persist one system-command identity without creating a world snapshot."""
+    payload = _encoded_command_result(entry)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    connection = _connect(path)
+    try:
+        with connection:
+            _ensure_schema(connection)
+            existing = connection.execute(
+                "SELECT operation, fingerprint, result FROM command_ledger WHERE command_id = ?",
+                (command_id,),
+            ).fetchone()
+            if existing is not None:
+                existing_entry = {
+                    "operation": existing["operation"],
+                    "fingerprint": existing["fingerprint"],
+                    "result": _decode_value(json.loads(existing["result"], parse_constant=_reject_json_constant)),
+                }
+                if existing_entry != entry:
+                    raise ValueError(f"command ID {command_id!r} has conflicting durable state")
+                return
+            connection.execute(
+                "INSERT INTO command_ledger (command_id, operation, fingerprint, result) VALUES (?, ?, ?, ?)",
+                (command_id, entry["operation"], entry["fingerprint"], payload),
+            )
+    finally:
+        connection.close()
 
 
 def save_snapshot(world: World, path: str | Path, *, snapshot_id: str = "latest") -> SnapshotInfo:
@@ -211,6 +281,20 @@ def save_snapshot(world: World, path: str | Path, *, snapshot_id: str = "latest"
                 """,
                 (info.snapshot_id, info.schema_version, info.created_at, info.checksum, info.event_count, payload),
             )
+            for command_id, entry in world.runtime.get("command_ledger", {}).items():
+                if not isinstance(command_id, str) or not isinstance(entry, dict):
+                    raise ValueError("world command ledger contains an invalid entry")
+                connection.execute(
+                    """
+                    INSERT INTO command_ledger (command_id, operation, fingerprint, result)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(command_id) DO UPDATE SET
+                        operation = excluded.operation,
+                        fingerprint = excluded.fingerprint,
+                        result = excluded.result
+                    """,
+                    (command_id, entry["operation"], entry["fingerprint"], _encoded_command_result(entry)),
+                )
     finally:
         connection.close()
     return info
@@ -244,6 +328,9 @@ def load_snapshot(path: str | Path, *, snapshot_id: str = "latest") -> World:
     world = _decode_value(document.get("world"))
     if not isinstance(world, World):
         raise TypeError("snapshot payload is not a World")
+    # System commands may have been accepted after the snapshot was written.
+    # Rehydrate their durable identities before a caller considers a retry.
+    world.runtime.setdefault("command_ledger", {}).update(load_command_ledger(path))
     errors = validate_world(world)
     if errors:
         raise ValueError(f"snapshot contains invalid world: {errors[:3]}")
@@ -266,14 +353,14 @@ def _command_fingerprint(world: World, operation_name: str, args: tuple[Any, ...
     ).hexdigest()
 
 
-def execute_once(
+def execute_once_with_status(
     world: World,
     command_id: str,
     operation: Callable[..., _T],
     *args: Any,
     **kwargs: Any,
-) -> _T:
-    """Execute a command once and reject conflicting reuse of its ID."""
+) -> tuple[_T, bool]:
+    """Execute a command once and report whether this call committed it."""
     if not command_id:
         raise ValueError("command_id must not be empty")
     ledger = world.runtime.setdefault("command_ledger", {})
@@ -285,7 +372,7 @@ def execute_once(
             raise ValueError(f"command ID {command_id!r} was already used for {existing.get('operation')}")
         if existing.get("fingerprint") != fingerprint:
             raise ValueError(f"command ID {command_id!r} was reused with different arguments")
-        return copy.deepcopy(existing["result"])
+        return copy.deepcopy(existing["result"]), False
     result = operation(*args, **kwargs)
     ledger[command_id] = {
         "operation": operation_name,
@@ -298,4 +385,63 @@ def execute_once(
         entities=[command_id],
         data={"operation": operation_name, "fingerprint": fingerprint},
     )
+    return result, True
+
+
+def execute_once(
+    world: World,
+    command_id: str,
+    operation: Callable[..., _T],
+    *args: Any,
+    **kwargs: Any,
+) -> _T:
+    """Execute a command once and reject conflicting reuse of its ID."""
+    result, _executed = execute_once_with_status(world, command_id, operation, *args, **kwargs)
     return result
+
+
+def execute_save_once(world: World, command_id: str, path: str | Path) -> tuple[dict[str, Any], bool]:
+    """Atomically snapshot a Save command and its durable command identity.
+
+    The saved command result intentionally excludes the payload checksum: the
+    checksum covers the payload that contains this ledger entry, so including
+    it would create a circular value. ``save_snapshot`` still returns the
+    checksum to direct callers; web Save responses use this stable metadata.
+    """
+    if not command_id:
+        raise ValueError("command_id must not be empty")
+    operation_name = f"{execute_save_once.__module__}.{execute_save_once.__qualname__}"
+    fingerprint = _command_fingerprint(world, operation_name, (world, str(path)), {})
+    ledger = world.runtime.setdefault("command_ledger", {})
+    existing = ledger.get(command_id)
+    if existing is not None:
+        if existing.get("operation") != operation_name:
+            raise ValueError(f"command ID {command_id!r} was already used for {existing.get('operation')}")
+        if existing.get("fingerprint") != fingerprint:
+            raise ValueError(f"command ID {command_id!r} was reused with different arguments")
+        return copy.deepcopy(existing["result"]), False
+
+    previous_events = list(world.events)
+    previous_event_number = world._event_number
+    result = {
+        "snapshot_id": "latest",
+        "schema_version": SNAPSHOT_SCHEMA_VERSION,
+        "created_at": world.now.isoformat(),
+        "event_count": len(world.events) + 1,
+    }
+    entry = {"operation": operation_name, "fingerprint": fingerprint, "result": result}
+    ledger[command_id] = entry
+    try:
+        world.record(
+            "command_executed",
+            f"executed idempotent command {command_id}",
+            entities=[command_id],
+            data={"operation": operation_name, "fingerprint": fingerprint},
+        )
+        save_snapshot(world, path)
+    except Exception:
+        ledger.pop(command_id, None)
+        world.events[:] = previous_events
+        world._event_number = previous_event_number
+        raise
+    return copy.deepcopy(result), True

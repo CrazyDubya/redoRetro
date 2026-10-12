@@ -72,9 +72,13 @@ returning it. An allowlisted dataclass registry and encoded RNG state preserve
 the existing runtime registries without unsafe executable deserialization or a
 second simulation model. `execute_once` records a command fingerprint and
 result in canonical runtime state, so identical retries are no-ops and
-conflicting argument reuse is rejected after reload. Round-trip, corruption,
-command-conflict, and 72+72-hour equivalence coverage are in
-`tests/test_persistence.py`.
+conflicting argument reuse is rejected after reload. The SQLite command ledger
+also persists system-command identities outside the replaced world, while
+Save stages its command record inside the snapshot transaction. Thus delayed
+Save, Reload, and Restart retries cannot overwrite or discard intervening
+gameplay, including after a process restart. Round-trip, corruption,
+command-conflict, system-retry, and 72+72-hour equivalence coverage are in
+`tests/test_persistence.py` and `tests/test_web.py`.
 
 ## M3.5 baseline — living neighborhood
 
@@ -113,11 +117,14 @@ runtime movement authority as every other actor.
 external dock incident and otherwise advances through the ordinary runtime. It
 checks movement, work, bounded meetings, divergent incident beliefs, market
 conservation, world validation, JSON serialization, and a measured runtime
-bound. Acceptance tests also execute a same-seed player command tape and
-demonstrate that purchase/movement choices change the canonical world. The
-full pytest suite retains the Milestone 2 harbor and bidirectional-ferry
-regressions, while the HTTP tests cover the playable journey and concurrent
-command behavior.
+bound. Acceptance tests also execute a same-seed player command tape through
+the real inspection and purchase gateways, then compare a later market-price
+decision after autonomous refreshes. A separate adversarial test gives the
+player both a conflicting all-day schedule and an unmet household need and
+verifies that an issued movement completes without autonomous redirection.
+The full pytest suite retains the Milestone 2 harbor and bidirectional-ferry
+regressions, while the HTTP tests cover the playable journey, concurrent
+command behavior, and system-command retries across reload and restart.
 
 Milestone 3 known limitations are deliberately bounded: the Ratzer-derived
 street graph remains an approximate slice rather than a parcel survey; the
