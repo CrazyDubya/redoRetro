@@ -228,6 +228,21 @@ class WebClientTests(unittest.TestCase):
             urlopen(request)
         self.assertEqual(error.exception.code, 400)
 
+    def test_failed_reload_does_not_poison_command_id(self) -> None:
+        candidate = build_street_world(seed=0).world
+        with patch("redos.web.load_snapshot", side_effect=[ValueError("broken snapshot"), candidate]):
+            request = Request(
+                self.base + "/api/command",
+                data=json.dumps({"command_id": "retryable-reload", "action": "reload"}).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with self.assertRaises(HTTPError) as error:
+                urlopen(request)
+            self.assertEqual(error.exception.code, 400)
+            retried = self._post({"command_id": "retryable-reload", "action": "reload"})
+        self.assertEqual(retried["result"]["reloaded"], True)
+
     def test_system_command_retries_do_not_discard_intervening_state(self) -> None:
         self._post({"command_id": "stable-save", "action": "save"})
         self._post({"command_id": "stable-move-before-reload", "action": "move", "destination_id": "royal-exchange"})

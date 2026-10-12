@@ -20,6 +20,7 @@ from .persistence import (
     load_command_ledger,
     load_snapshot,
     persist_command_entry,
+    recorded_command_result,
 )
 from .runtime import advance_world
 from .streets import build_street_world
@@ -132,8 +133,7 @@ def _advance_player(world: World, hours: float) -> float:
 
 
 def _reload_marker(path: str) -> dict[str, object]:
-    """Validate a saved world before the session swaps to it."""
-    load_snapshot(path)
+    """Identify a reload command after its candidate snapshot was validated."""
     return {"reloaded": True, "snapshot_path": path}
 
 
@@ -297,10 +297,14 @@ class _Handler(BaseHTTPRequestHandler):
             result, _executed = execute_save_once(world, command_id, session.snapshot_path)
             return result
         if action == "reload":
-            result, executed = execute_once_with_status(world, command_id, _reload_marker, str(session.snapshot_path))
-            if not executed:
+            reload_path = str(session.snapshot_path)
+            recorded, result = recorded_command_result(world, command_id, _reload_marker, reload_path)
+            if recorded:
                 return result
             candidate = load_snapshot(session.snapshot_path)
+            result, executed = execute_once_with_status(world, command_id, _reload_marker, reload_path)
+            if not executed:
+                return result
             entry = copy.deepcopy(world.runtime["command_ledger"][command_id])
             persist_command_entry(session.snapshot_path, command_id, entry)
             candidate.runtime.setdefault("command_ledger", {})[command_id] = entry

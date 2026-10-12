@@ -353,6 +353,29 @@ def _command_fingerprint(world: World, operation_name: str, args: tuple[Any, ...
     ).hexdigest()
 
 
+def recorded_command_result(
+    world: World,
+    command_id: str,
+    operation: Callable[..., _T],
+    *args: Any,
+    **kwargs: Any,
+) -> tuple[bool, _T | None]:
+    """Return a previously committed command result without executing anything."""
+    if not command_id:
+        raise ValueError("command_id must not be empty")
+    ledger = world.runtime.setdefault("command_ledger", {})
+    operation_name = f"{operation.__module__}.{operation.__qualname__}"
+    fingerprint = _command_fingerprint(world, operation_name, args, kwargs)
+    existing = ledger.get(command_id)
+    if existing is None:
+        return False, None
+    if existing.get("operation") != operation_name:
+        raise ValueError(f"command ID {command_id!r} was already used for {existing.get('operation')}")
+    if existing.get("fingerprint") != fingerprint:
+        raise ValueError(f"command ID {command_id!r} was reused with different arguments")
+    return True, copy.deepcopy(existing["result"])
+
+
 def execute_once_with_status(
     world: World,
     command_id: str,
@@ -361,18 +384,12 @@ def execute_once_with_status(
     **kwargs: Any,
 ) -> tuple[_T, bool]:
     """Execute a command once and report whether this call committed it."""
-    if not command_id:
-        raise ValueError("command_id must not be empty")
     ledger = world.runtime.setdefault("command_ledger", {})
     operation_name = f"{operation.__module__}.{operation.__qualname__}"
     fingerprint = _command_fingerprint(world, operation_name, args, kwargs)
-    existing = ledger.get(command_id)
-    if existing is not None:
-        if existing.get("operation") != operation_name:
-            raise ValueError(f"command ID {command_id!r} was already used for {existing.get('operation')}")
-        if existing.get("fingerprint") != fingerprint:
-            raise ValueError(f"command ID {command_id!r} was reused with different arguments")
-        return copy.deepcopy(existing["result"]), False
+    recorded, result = recorded_command_result(world, command_id, operation, *args, **kwargs)
+    if recorded:
+        return result, False  # type: ignore[return-value]
     result = operation(*args, **kwargs)
     ledger[command_id] = {
         "operation": operation_name,
