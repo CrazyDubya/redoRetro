@@ -302,23 +302,24 @@ class _Handler(BaseHTTPRequestHandler):
             if recorded:
                 return result
             candidate = load_snapshot(session.snapshot_path)
-            result, executed = execute_once_with_status(world, command_id, _reload_marker, reload_path)
-            if not executed:
-                return result
-            entry = copy.deepcopy(world.runtime["command_ledger"][command_id])
+            if session.player_id not in candidate.actors:
+                raise KeyError(session.player_id)
+            result, _executed = execute_once_with_status(candidate, command_id, _reload_marker, reload_path)
+            entry = candidate.runtime["command_ledger"][command_id]
             persist_command_entry(session.snapshot_path, command_id, entry)
-            candidate.runtime.setdefault("command_ledger", {})[command_id] = entry
             session.world = candidate
             return result
         if action == "restart":
-            result, executed = execute_once_with_status(world, command_id, _restart_marker, world.seed)
-            if not executed:
+            recorded, result = recorded_command_result(world, command_id, _restart_marker, world.seed)
+            if recorded:
                 return result
-            ledger = copy.deepcopy(world.runtime.get("command_ledger", {}))
             restarted = build_street_world(seed=world.seed).world
-            entry = ledger[command_id]
+            if session.player_id not in restarted.actors:
+                raise KeyError(session.player_id)
+            restarted.runtime["command_ledger"] = copy.deepcopy(world.runtime.get("command_ledger", {}))
+            result, _executed = execute_once_with_status(restarted, command_id, _restart_marker, world.seed)
+            entry = restarted.runtime["command_ledger"][command_id]
             persist_command_entry(session.snapshot_path, command_id, entry)
-            restarted.runtime["command_ledger"] = ledger
             session.world = restarted
             return result
         if action == "move":

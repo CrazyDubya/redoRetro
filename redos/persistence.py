@@ -363,7 +363,7 @@ def recorded_command_result(
     """Return a previously committed command result without executing anything."""
     if not command_id:
         raise ValueError("command_id must not be empty")
-    ledger = world.runtime.setdefault("command_ledger", {})
+    ledger = world.runtime.get("command_ledger", {})
     operation_name = f"{operation.__module__}.{operation.__qualname__}"
     fingerprint = _command_fingerprint(world, operation_name, args, kwargs)
     existing = ledger.get(command_id)
