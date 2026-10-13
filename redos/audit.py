@@ -88,6 +88,7 @@ def money_conservation_errors(world: World, tolerance: float = 1e-6) -> list[str
 
 def validate_world(world: World) -> list[str]:
     from .community import community_errors
+    from .households import household_errors
 
     errors: list[str] = []
     if not math.isfinite(world.seed):
@@ -101,6 +102,9 @@ def validate_world(world: World) -> list[str]:
             world.location_of(lot.holder_id)
         except KeyError:
             errors.append(f"lot {lot.id} has unknown holder {lot.holder_id}")
+    for obj in world.situated_objects.values():
+        if obj.place_id not in world.places:
+            errors.append(f"object {obj.id} has unknown place {obj.place_id}")
     for actor in world.actors.values():
         if actor.health <= 0:
             errors.append(f"actor {actor.id} is unhealthy")
@@ -154,6 +158,7 @@ def validate_world(world: World) -> list[str]:
             errors.append(f"transport asset {asset.id} has non-finite values")
     errors.extend(market_balance_errors(world))
     errors.extend(community_errors(world))
+    errors.extend(household_errors(world))
     return errors
 
 

@@ -61,3 +61,28 @@ membership are rejected before canonical changes or events.
 complete state digest at load and after 24 ordinary runtime hours. Separate
 schema-3 tests compare uninterrupted advancement with a 12+12-hour snapshot
 restart including the new records, RNG, events and all preexisting systems.
+
+## M4.2 — household continuity and voluntary support
+
+Household arrangements and support amounts are reconstructed fixture facts,
+not a claim to implement a universal 1770 family-support statute. The archival
+almshouse overview supplies context for dependency and assistance; it does
+not establish the exact private duties modeled here. The three arrangements
+are wage-dependent, independent tradesperson and dependent/extended household.
+No birth, death, descent or real person's genealogy is generated.
+
+An explicit support duty creates dated receivables. Default adds the owed
+amount to the existing debtor's debt once; payments transfer existing cash
+and retire the accounted debt. Cancelling support materializes all periods
+already due, including the cancellation timestamp, and leaves arrears
+attached to the original parties. Pooled resources finance an ordinary
+shopper only while co-located at home. Purchase, delivery and consumption
+retain a chain back to the support payment, including the actual consumed
+lots. Membership and residence transitions retain history; changing residence
+leaves possessions in a private situated custodian at the previous home (not
+public market stock) and redirects future
+home schedules without relocating a person.
+
+Schema 4 adds support duties, obligations and the household arrangement field.
+Both the frozen M3 schema-2 fixture and a real M4.1 schema-3 fixture migrate
+without changing the next 24 hours of preexisting simulation state.

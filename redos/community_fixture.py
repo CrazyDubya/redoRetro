@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from .model import HistoricalProvenance, Institution, InstitutionalRule, ScheduleEntry, SocialTie
+from .model import HistoricalProvenance, Institution, InstitutionalRule, ScheduleEntry, SocialTie, SupportDuty
 from .streets import build_street_world
 from .vertical import SliceState
 
@@ -52,4 +52,35 @@ def build_community_world(*, seed: int = 0) -> SliceState:
             f"{institution_id}-records-rule", institution_id, "membership", "documented_evidence",
             world.now, end, provenance,
         ))
+    return state
+
+
+def build_household_world(*, seed: int = 0) -> SliceState:
+    """Three reconstructed household arrangements with a genuine support loop."""
+    state = build_community_world(seed=seed)
+    world = state.world
+    world.households["household-a"].arrangement = "wage_dependent"
+    world.households["merchant-household"].arrangement = "independent_tradesperson"
+    dependent = world.households["household-c"]
+    dependent.arrangement = "dependent_extended"
+    for member_id in dependent.members:
+        actor = world.actors[member_id]
+        if actor.employer_id is not None:
+            world.businesses[actor.employer_id].employees.remove(actor.id)
+        actor.employer_id = None
+        actor.occupation = "household dependent"
+        actor.schedule = [ScheduleEntry(0, 7, "sleep", dependent.residence_id),
+                          ScheduleEntry(7, 8, "eat", dependent.residence_id),
+                          ScheduleEntry(8, 24, "leisure at home", dependent.residence_id)]
+        if actor.money:
+            world.pay(actor.id, "citizen-0", actor.money, reason="authored initial household savings distribution")
+    world.pay(dependent.id, "citizen-0", dependent.cash, reason="authored initial household savings distribution")
+    world.pay("warehouse-business", "citizen-0", 4000, reason="authored initial savings distribution")
+    provenance = HistoricalProvenance(
+        "https://www.archives.nyc/almshouse", "Voluntary household support is a reconstructed economic commitment",
+        "Bounded Lower Manhattan", world.now, datetime(1771, 1, 1), "reconstructed",
+        "Amount, parties and recurrence are test data; no statutory family duty or genealogy is claimed",
+    )
+    world.add(SupportDuty("household-support", "citizen-0", dependent.id, 48.0, 24.0, world.now,
+                          dependent.residence_id, world.now, datetime(1771, 1, 1), provenance))
     return state
