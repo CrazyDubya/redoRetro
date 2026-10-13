@@ -12,6 +12,7 @@ import unittest
 from redos.audit import validate_world
 from redos.community import set_institution_members
 from redos.community_fixture import build_community_world
+from redos.model import Actor
 from redos.persistence import _payload_for, load_snapshot, save_snapshot
 from redos.runtime import advance_world
 
@@ -94,6 +95,18 @@ class CommunitySchemaTests(unittest.TestCase):
         set_institution_members(world, updated.id, updated.member_actor_ids, updated.official_actor_ids)
         self.assertEqual(_payload_for(world), after)
         self.assertEqual(world.events[-1].kind, "institution_roster_changed")
+
+    def test_generated_ids_and_later_ordinary_collisions_reject_atomically(self) -> None:
+        world = build_community_world(seed=74).world
+        tie = next(iter(world.social_ties.values()))
+        before = _payload_for(world)
+        for reserved in (f"event-{world._event_number + 1}", f"event-{world._event_number + 100}", "lot-999", "movement-999"):
+            with self.assertRaisesRegex(ValueError, "reserved"):
+                world.add(replace(tie, id=reserved))
+            self.assertEqual(_payload_for(world), before)
+        with self.assertRaisesRegex(ValueError, "community record"):
+            world.add(Actor(tie.id, "Conflicting actor", "shop"))
+        self.assertEqual(_payload_for(world), before)
 
     def test_frozen_m3_snapshot_migrates_without_changing_next_24_hours(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

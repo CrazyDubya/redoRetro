@@ -718,6 +718,8 @@ class World:
         if collection is None:
             raise TypeError(f"unsupported world entity: {type(entity)!r}")
         key = entity.route_id if isinstance(entity, RouteCondition) else entity.id
+        if any(key in registry for registry in (self.social_ties, self.institutions, self.institutional_rules)):
+            raise ValueError(f"ID {key} conflicts with a community record")
         collection[key] = entity
         if isinstance(entity, Household):
             for actor_id in entity.members:

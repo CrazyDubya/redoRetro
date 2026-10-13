@@ -6,6 +6,7 @@ It does not adjudicate aid, hearings, labor agreements, or NPC decisions.
 
 from dataclasses import replace
 from datetime import datetime
+import re
 from urllib.parse import urlsplit
 
 from .model import HistoricalProvenance, Institution, InstitutionalRule, ScheduleEntry, SocialTie, World
@@ -41,6 +42,8 @@ def validate_community_entity(world: World, entity: SocialTie | Institution | In
     """Preflight all references and bounds without mutating canonical state."""
     if not isinstance(entity.id, str) or not entity.id:
         raise ValueError("community ID must not be empty")
+    if re.fullmatch(r"(?:event|lot|movement|observation|statement)-\d+", entity.id):
+        raise ValueError("community ID uses a reserved generated namespace")
     _interval(entity.starts_at, entity.ends_at, entity.id)
     provenance = entity.provenance
     if not isinstance(provenance, HistoricalProvenance):
