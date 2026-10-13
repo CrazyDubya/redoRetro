@@ -26,7 +26,7 @@ from .market import TradeQuote
 from .model import World
 
 
-SNAPSHOT_SCHEMA_VERSION = 2
+SNAPSHOT_SCHEMA_VERSION = 3
 _T = TypeVar("_T")
 _MODEL_TYPES = {
     cls.__name__: cls
@@ -36,6 +36,8 @@ _MODEL_TYPES = {
 _MODEL_TYPES[Recipe.__name__] = Recipe
 _MODEL_TYPES[TradeQuote.__name__] = TradeQuote
 _WORLD_FIELDS = frozenset(vars(World()).keys())
+_COMMUNITY_FIELDS = frozenset({"social_ties", "institutions", "institutional_rules"})
+_M3_WORLD_FIELDS = _WORLD_FIELDS - _COMMUNITY_FIELDS
 
 
 @dataclass(frozen=True)
@@ -312,7 +314,7 @@ def load_snapshot(path: str | Path, *, snapshot_id: str = "latest") -> World:
         connection.close()
     if row is None:
         raise KeyError(f"snapshot {snapshot_id!r} not found")
-    if row["schema_version"] != SNAPSHOT_SCHEMA_VERSION:
+    if row["schema_version"] not in {2, SNAPSHOT_SCHEMA_VERSION}:
         raise ValueError(f"unsupported snapshot schema {row['schema_version']}")
     payload = bytes(row["payload"])
     if hashlib.sha256(payload).hexdigest() != row["checksum"]:
@@ -323,18 +325,44 @@ def load_snapshot(path: str | Path, *, snapshot_id: str = "latest") -> World:
         raise ValueError(f"snapshot {snapshot_id!r} is not valid explicit JSON") from exc
     if not isinstance(document, dict):
         raise ValueError("snapshot document must be an object")
-    if document.get("format") != "redos.world" or document.get("schema_version") != SNAPSHOT_SCHEMA_VERSION:
+    if document.get("format") != "redos.world" or document.get("schema_version") != row["schema_version"]:
         raise ValueError("unsupported snapshot document")
+    document = migrate_snapshot_document(document)
     world = _decode_value(document.get("world"))
     if not isinstance(world, World):
         raise TypeError("snapshot payload is not a World")
     # System commands may have been accepted after the snapshot was written.
     # Rehydrate their durable identities before a caller considers a retry.
-    world.runtime.setdefault("command_ledger", {}).update(load_command_ledger(path))
+    durable_commands = load_command_ledger(path)
+    if durable_commands:
+        world.runtime.setdefault("command_ledger", {}).update(durable_commands)
     errors = validate_world(world)
     if errors:
         raise ValueError(f"snapshot contains invalid world: {errors[:3]}")
     return world
+
+
+def migrate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
+    """Migrate frozen M3 schema 2 to 3 without changing its simulation state.
+
+    The migration is in memory; a successful subsequent Save writes schema 3.
+    Loading never rewrites the user's snapshot or its durable command ledger.
+    """
+    if document.get("schema_version") == SNAPSHOT_SCHEMA_VERSION:
+        return document
+    if document.get("format") != "redos.world" or document.get("schema_version") != 2:
+        raise ValueError("unsupported snapshot migration")
+    encoded_world = document.get("world")
+    if not isinstance(encoded_world, dict) or encoded_world.get("$type") != "World":
+        raise ValueError("invalid M3 World snapshot")
+    fields_data = encoded_world.get("fields")
+    if not isinstance(fields_data, dict) or set(fields_data) != _M3_WORLD_FIELDS:
+        raise ValueError("M3 snapshot World fields do not match frozen schema 2")
+    migrated = copy.deepcopy(document)
+    for name in sorted(_COMMUNITY_FIELDS):
+        migrated["world"]["fields"][name] = {"$type": "dict", "items": []}
+    migrated["schema_version"] = SNAPSHOT_SCHEMA_VERSION
+    return migrated
 
 
 def _command_fingerprint(world: World, operation_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:

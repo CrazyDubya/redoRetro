@@ -11,7 +11,7 @@ from urllib.request import Request, urlopen
 from unittest.mock import patch
 
 from redos.living import witness_event
-from redos.persistence import load_command_ledger
+from redos.persistence import SNAPSHOT_SCHEMA_VERSION, load_command_ledger
 from redos.streets import build_street_world
 from redos.web import create_server
 
@@ -206,11 +206,11 @@ class WebClientTests(unittest.TestCase):
 
     def test_browser_save_reload_and_restart_controls_use_canonical_world(self) -> None:
         saved = self._post({"command_id": "save-1", "action": "save"})
-        self.assertEqual(saved["result"]["schema_version"], 2)
+        self.assertEqual(saved["result"]["schema_version"], SNAPSHOT_SCHEMA_VERSION)
         repeated_save = self._post({"command_id": "save-1", "action": "save"})
         self.assertEqual(repeated_save["result"], saved["result"])
         second_save = self._post({"command_id": "save-2", "action": "save"})
-        self.assertEqual(second_save["result"]["schema_version"], 2)
+        self.assertEqual(second_save["result"]["schema_version"], SNAPSHOT_SCHEMA_VERSION)
         moved = self._post({"command_id": "move-before-reload", "action": "move", "destination_id": "royal-exchange"})
         self.assertEqual(moved["state"]["player"]["traveling_to"], "wall-street")
         reloaded = self._post({"command_id": "reload-1", "action": "reload"})

@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from redos.actions import purchase
-from redos.persistence import execute_once, load_snapshot, save_snapshot
+from redos.persistence import SNAPSHOT_SCHEMA_VERSION, execute_once, load_snapshot, save_snapshot
 from redos.streets import build_street_world
 
 
@@ -99,7 +99,7 @@ class PersistenceTests(unittest.TestCase):
             schema_version = connection.execute("SELECT schema_version FROM world_snapshots WHERE snapshot_id = 'latest'").fetchone()[0]
             connection.close()
 
-        self.assertEqual(schema_version, 2)
+        self.assertEqual(schema_version, SNAPSHOT_SCHEMA_VERSION)
         document = json.loads(payload.decode("utf-8"))
         self.assertEqual(document["format"], "redos.world")
 
