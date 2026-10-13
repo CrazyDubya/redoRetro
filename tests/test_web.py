@@ -1,4 +1,6 @@
+import copy
 import json
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import tempfile
@@ -9,6 +11,7 @@ from urllib.request import Request, urlopen
 from unittest.mock import patch
 
 from redos.living import witness_event
+from redos.persistence import load_command_ledger
 from redos.streets import build_street_world
 from redos.web import create_server
 
@@ -227,6 +230,102 @@ class WebClientTests(unittest.TestCase):
         with self.assertRaises(HTTPError) as error:
             urlopen(request)
         self.assertEqual(error.exception.code, 400)
+
+    def test_failed_reload_does_not_poison_command_id(self) -> None:
+        original = self.server.session.world
+        ledger_before = copy.deepcopy(original.runtime.get("command_ledger", {}))
+        events_before = list(original.events)
+        event_number_before = original._event_number
+        candidate = build_street_world(seed=0).world
+        with patch("redos.web.load_snapshot", side_effect=[ValueError("broken snapshot"), candidate]):
+            request = Request(
+                self.base + "/api/command",
+                data=json.dumps({"command_id": "retryable-reload", "action": "reload"}).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with self.assertRaises(HTTPError) as error:
+                urlopen(request)
+            self.assertEqual(error.exception.code, 400)
+            self.assertIs(self.server.session.world, original)
+            self.assertEqual(original.runtime.get("command_ledger", {}), ledger_before)
+            self.assertEqual(original.events, events_before)
+            self.assertEqual(original._event_number, event_number_before)
+            retried = self._post({"command_id": "retryable-reload", "action": "reload"})
+        self.assertEqual(retried["result"]["reloaded"], True)
+        self.assertIs(self.server.session.world, candidate)
+
+    def test_failed_replacement_persistence_leaves_commands_retryable(self) -> None:
+        self._post({"command_id": "failure-test-save", "action": "save"})
+        for action in ("reload", "restart"):
+            with self.subTest(action=action):
+                original = self.server.session.world
+                ledger_before = copy.deepcopy(original.runtime.get("command_ledger", {}))
+                events_before = list(original.events)
+                event_number_before = original._event_number
+                durable_before = load_command_ledger(self.snapshot_path)
+                body = {"command_id": f"retryable-{action}-write", "action": action}
+                with patch("redos.web.persist_command_entry", side_effect=OSError("disk write failed")):
+                    with self.assertRaises(HTTPError) as error:
+                        self._post(body)
+                self.assertEqual(error.exception.code, 500)
+                self.assertIs(self.server.session.world, original)
+                self.assertEqual(original.runtime.get("command_ledger", {}), ledger_before)
+                self.assertEqual(original.events, events_before)
+                self.assertEqual(original._event_number, event_number_before)
+                self.assertEqual(load_command_ledger(self.snapshot_path), durable_before)
+
+                self._post(body)
+                replacement = self.server.session.world
+                self.assertIsNot(replacement, original)
+                self.assertIn(body["command_id"], load_command_ledger(self.snapshot_path))
+                self._post({"command_id": f"move-after-{action}-retry", "action": "move", "destination_id": "royal-exchange"})
+                events_after_move = list(replacement.events)
+                with patch("redos.web.load_snapshot", side_effect=AssertionError("duplicate reloaded")), patch(
+                    "redos.web.build_street_world", side_effect=AssertionError("duplicate restarted")
+                ):
+                    self._post(body)
+                self.assertIs(self.server.session.world, replacement)
+                self.assertEqual(replacement.events, events_after_move)
+
+    def test_missing_and_corrupt_reload_can_retry_after_snapshot_repair(self) -> None:
+        for failure in ("missing", "corrupt"):
+            with self.subTest(failure=failure):
+                if failure == "corrupt":
+                    with sqlite3.connect(self.snapshot_path) as connection:
+                        connection.execute("UPDATE world_snapshots SET checksum = 'invalid'")
+                original = self.server.session.world
+                ledger_before = copy.deepcopy(original.runtime.get("command_ledger", {}))
+                events_before = list(original.events)
+                event_number_before = original._event_number
+                body = {"command_id": f"reload-{failure}-snapshot", "action": "reload"}
+                with self.assertRaises(HTTPError):
+                    self._post(body)
+                self.assertIs(self.server.session.world, original)
+                self.assertEqual(original.runtime.get("command_ledger", {}), ledger_before)
+                self.assertEqual(original.events, events_before)
+                self.assertEqual(original._event_number, event_number_before)
+                self._post({"command_id": f"repair-{failure}-snapshot", "action": "save"})
+                self._post(body)
+                self.assertIsNot(self.server.session.world, original)
+                self.assertIn(body["command_id"], load_command_ledger(self.snapshot_path))
+
+    def test_failed_restart_construction_leaves_command_retryable(self) -> None:
+        original = self.server.session.world
+        ledger_before = copy.deepcopy(original.runtime.get("command_ledger", {}))
+        events_before = list(original.events)
+        event_number_before = original._event_number
+        body = {"command_id": "retryable-restart-build", "action": "restart"}
+        with patch("redos.web.build_street_world", side_effect=ValueError("construction failed")):
+            with self.assertRaises(HTTPError) as error:
+                self._post(body)
+        self.assertEqual(error.exception.code, 400)
+        self.assertIs(self.server.session.world, original)
+        self.assertEqual(original.runtime.get("command_ledger", {}), ledger_before)
+        self.assertEqual(original.events, events_before)
+        self.assertEqual(original._event_number, event_number_before)
+        self._post(body)
+        self.assertIsNot(self.server.session.world, original)
 
     def test_system_command_retries_do_not_discard_intervening_state(self) -> None:
         self._post({"command_id": "stable-save", "action": "save"})

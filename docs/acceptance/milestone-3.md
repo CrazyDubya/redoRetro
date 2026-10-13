@@ -80,6 +80,13 @@ gameplay, including after a process restart. Round-trip, corruption,
 command-conflict, system-retry, and 72+72-hour equivalence coverage are in
 `tests/test_persistence.py` and `tests/test_web.py`.
 
+Reload and Restart prepare command records and events in the candidate world,
+persist the command identity, then install that world under the session lock.
+Failed snapshot loading, replacement construction, or durable writes leave the
+active world, ledger, events, and event counter unchanged. HTTP regressions
+cover missing and corrupt snapshots followed by repair and same-ID retry,
+failed durable writes for both commands, and failed Restart construction.
+
 ## M3.5 baseline — living neighborhood
 
 The street fixture now connects the existing residences to the Ratzer-derived
