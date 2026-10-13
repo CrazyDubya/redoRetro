@@ -125,6 +125,7 @@ class Household:
     cash: float = 0.0
     debt: float = 0.0
     daily_expenses: float = 0.0
+    arrangement: str = "unspecified"
 
 
 @dataclass(frozen=True)
@@ -184,6 +185,39 @@ class InstitutionalRule:
     starts_at: datetime
     ends_at: datetime | None
     provenance: HistoricalProvenance
+
+
+@dataclass
+class SupportDuty:
+    id: str
+    supporter_id: str
+    household_id: str
+    amount: float
+    period_hours: float
+    next_due_at: datetime
+    jurisdiction_place_id: str
+    starts_at: datetime
+    ends_at: datetime | None
+    provenance: HistoricalProvenance
+    status: str = "active"
+    causal_event_ids: tuple[str, ...] = ()
+
+
+@dataclass
+class Obligation:
+    """A community receivable, settled through the existing money gateway."""
+
+    id: str
+    debtor_id: str
+    creditor_id: str
+    jurisdiction_place_id: str
+    amount: float
+    due_at: datetime
+    source_id: str
+    status: str = "open"
+    paid: float = 0.0
+    accounted_debt: float = 0.0
+    causal_event_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -645,6 +679,8 @@ class World:
         self.social_ties: dict[str, SocialTie] = {}
         self.institutions: dict[str, Institution] = {}
         self.institutional_rules: dict[str, InstitutionalRule] = {}
+        self.support_duties: dict[str, SupportDuty] = {}
+        self.obligations: dict[str, Obligation] = {}
         self.businesses: dict[str, Business] = {}
         self.properties: dict[str, Property] = {}
         self.bank_accounts: dict[str, BankAccount] = {}
@@ -678,10 +714,14 @@ class World:
         self._statement_number = 0
 
     def add(self, entity: Any) -> Any:
-        if isinstance(entity, (SocialTie, Institution, InstitutionalRule)):
+        if isinstance(entity, (SocialTie, Institution, InstitutionalRule, SupportDuty)):
             from .community import register_community_entity
 
             return register_community_entity(self, entity)
+        if isinstance(entity, Obligation):
+            from .households import register_obligation
+
+            return register_obligation(self, entity)
         collection = {
             Place: self.places,
             Door: self.doors,
@@ -718,7 +758,7 @@ class World:
         if collection is None:
             raise TypeError(f"unsupported world entity: {type(entity)!r}")
         key = entity.route_id if isinstance(entity, RouteCondition) else entity.id
-        if any(key in registry for registry in (self.social_ties, self.institutions, self.institutional_rules)):
+        if any(key in registry for registry in (self.social_ties, self.institutions, self.institutional_rules, self.support_duties, self.obligations)):
             raise ValueError(f"ID {key} conflicts with a community record")
         collection[key] = entity
         if isinstance(entity, Household):

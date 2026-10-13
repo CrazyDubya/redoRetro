@@ -5,17 +5,18 @@ It does not adjudicate aid, hearings, labor agreements, or NPC decisions.
 """
 
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
 from urllib.parse import urlsplit
 
-from .model import HistoricalProvenance, Institution, InstitutionalRule, ScheduleEntry, SocialTie, World
+from .model import HistoricalProvenance, Institution, InstitutionalRule, ScheduleEntry, SocialTie, SupportDuty, World, require_finite
 
 
 COMMUNITY_COLLECTIONS = {
     SocialTie: "social_ties",
     Institution: "institutions",
     InstitutionalRule: "institutional_rules",
+    SupportDuty: "support_duties",
 }
 TIE_KINDS = frozenset({"kin", "patronage", "work", "apprenticeship", "mutual_aid", "congregation"})
 INSTITUTION_KINDS = frozenset({"civic", "congregation", "poor_relief", "trade"})
@@ -41,7 +42,7 @@ def _ids(ids: tuple[str, ...], valid: dict, label: str) -> None:
         raise ValueError(f"{label} contains duplicate or unknown IDs")
 
 
-def validate_community_entity(world: World, entity: SocialTie | Institution | InstitutionalRule) -> None:
+def validate_community_entity(world: World, entity: SocialTie | Institution | InstitutionalRule | SupportDuty) -> None:
     """Preflight all references and bounds without mutating canonical state."""
     if not isinstance(entity.id, str) or not entity.id:
         raise ValueError("community ID must not be empty")
@@ -114,7 +115,7 @@ def validate_community_entity(world: World, entity: SocialTie | Institution | In
             if occupied & hours:
                 raise ValueError("institution operating hours overlap")
             occupied.update(hours)
-    else:
+    elif isinstance(entity, InstitutionalRule):
         institution = world.institutions.get(entity.institution_id)
         if institution is None:
             raise ValueError("rule requires a registered institution")
@@ -125,24 +126,51 @@ def validate_community_entity(world: World, entity: SocialTie | Institution | In
             and (entity.ends_at is None or entity.ends_at > institution.ends_at)
         ):
             raise ValueError("rule interval exceeds institution interval")
+    else:
+        if entity.supporter_id not in world.actors or entity.household_id not in world.households:
+            raise ValueError("support duty requires an actor and household")
+        if entity.jurisdiction_place_id not in world.places:
+            raise ValueError("support duty requires a canonical jurisdiction")
+        for value in (entity.amount, entity.period_hours):
+            require_finite(value, "support duty")
+        if entity.amount <= 0 or entity.period_hours < 1:
+            raise ValueError("support amount must be positive and period at least one hour")
+        _interval(entity.next_due_at, None, "support deadline")
+        try:
+            entity.next_due_at + timedelta(hours=entity.period_hours)
+        except OverflowError as exc:
+            raise ValueError("support interval exceeds canonical calendar") from exc
+        if entity.next_due_at < entity.starts_at:
+            raise ValueError("support deadline precedes duty")
+        if entity.status not in {"active", "cancelled", "expired"}:
+            raise ValueError("unknown support duty state")
+        _ids(entity.causal_event_ids, {event.id: event for event in world.events}, "support evidence")
 
 
-def register_community_entity(world: World, entity: SocialTie | Institution | InstitutionalRule):
-    """Register one validated record, with no replacement of existing IDs."""
+def validate_new_community_id(world: World, record_id: str) -> None:
+    if not isinstance(record_id, str) or not record_id or GENERATED_ID.fullmatch(record_id):
+        raise ValueError("record ID is empty or reserved")
     if any(
-        entity.id in collection for name, collection in vars(world).items()
+        record_id in collection for name, collection in vars(world).items()
         if isinstance(collection, dict) and not name.startswith("_")
-    ) or any(event.id == entity.id for event in world.events):
-        raise ValueError(f"duplicate community ID {entity.id}")
+    ) or any(event.id == record_id for event in world.events):
+        raise ValueError(f"duplicate community ID {record_id}")
+
+
+def register_community_entity(world: World, entity: SocialTie | Institution | InstitutionalRule | SupportDuty):
+    """Register one validated record, with no replacement of existing IDs."""
+    validate_new_community_id(world, entity.id)
     validate_community_entity(world, entity)
     collection = getattr(world, COMMUNITY_COLLECTIONS[type(entity)])
     collection[entity.id] = entity
-    world.record(
+    event = world.record(
         "community_record_registered", f"registered {type(entity).__name__} {entity.id}",
         entities=[entity.id],
-        causes=entity.evidence_event_ids if isinstance(entity, SocialTie) else (),
+        causes=entity.evidence_event_ids if isinstance(entity, SocialTie) else entity.causal_event_ids if isinstance(entity, SupportDuty) else (),
         data={"record_type": type(entity).__name__, "source": entity.provenance.source_url},
     )
+    if isinstance(entity, SupportDuty):
+        entity.causal_event_ids = (*entity.causal_event_ids, event.id)
     return entity
 
 

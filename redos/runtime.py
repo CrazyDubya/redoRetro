@@ -19,7 +19,8 @@ from .living import meet, produce, propagate_information, recollect, revise_beli
 from .insurance import advance_claims
 from .merchant import evaluate_merchant_route
 from .ocean import book_ocean_trade
-from .market import buy, refresh_market
+from .market import buy, quote, refresh_market
+from .households import advance_household_support, fund_household_shopper, household_food_evidence
 from .model import Actor, World, require_finite
 from .realestate import advance_rents
 from .simulation import _start_next_leg, route_path, tick
@@ -104,6 +105,10 @@ def _adjudicate_food_need(world: World) -> None:
         )
         if shopper is None:
             continue
+        if household.arrangement != "unspecified":
+            cost = quote(world, world.runtime.get("food_market_id", "shop-market"), "bread", 1, side="buy").total
+            if not fund_household_shopper(world, shopper.id, cost):
+                continue
         shopper.active_task = "acquire food"
         shopper.task_target_location_id = shop_id
         shopper.current_activity = shopper.intention = "acquire food"
@@ -126,7 +131,8 @@ def _complete_food_task(world: World, actor: Actor) -> None:
         market_id = world.runtime.get("food_market_id", "shop-market")
         if actor.money > 0:
             try:
-                buy(world, actor.id, market_id, "bread", 1)
+                buy(world, actor.id, market_id, "bread", 1, causes=world.runtime.get("_household_shopping_causes", {}).get(actor.id, ()))
+                world.runtime.get("_household_shopping_causes", {}).pop(actor.id, None)
                 actor.active_task = "return with food"
                 actor.task_target_location_id = household.residence_id
                 actor.current_activity = actor.intention = "return with food"
@@ -142,6 +148,8 @@ def _complete_food_task(world: World, actor: Actor) -> None:
         return
     if actor.active_task == "return with food" and actor.location_id == household.residence_id:
         if world.quantity_held(actor.id, "bread") >= 1:
+            purchase_causes = tuple(event.id for event in reversed(world.events)
+                                    if event.kind == "trade" and actor.id in event.actors and "bread" in event.entities)[:1] if household.arrangement != "unspecified" else ()
             world.transfer_goods(
                 "bread",
                 1,
@@ -149,6 +157,7 @@ def _complete_food_task(world: World, actor: Actor) -> None:
                 to_holder=household.id,
                 to_owner=household.id,
                 reason="shopper delivered food home",
+                causes=purchase_causes,
             )
         else:
             world.record("need_unmet", f"{actor.id} returned without household food", actors=[actor.id], entities=[household.id])
@@ -165,6 +174,17 @@ def _consume_meal(world: World, actor: Actor) -> None:
         return
     household = world.households.get(actor.household_id or "")
     if household is None or actor.location_id != household.residence_id:
+        return
+    if household.arrangement != "unspecified":
+        if world.quantity_held(household.id, "bread") >= 1:
+            lot_ids, delivery_causes = household_food_evidence(world, household.id, 1)
+            world.consume_goods(household.id, "bread", 1, lot_ids=lot_ids, causes=delivery_causes, reason="household member consumed food")
+            actor.health = min(1.0, actor.health + 0.01)
+            world.record("meal", f"{actor.id} ate household food", actors=[actor.id], entities=[household.id],
+                         causes=[world.events[-1].id])
+        else:
+            actor.health = max(0.2, actor.health - 0.02)
+            world.record("hunger", f"{actor.id} missed a meal", actors=[actor.id], entities=[household.id])
         return
     if world.quantity_held(household.id, "bread") >= 1:
         consumed = world.consume_goods(household.id, "bread", 1, reason="household consumed food")
@@ -442,6 +462,7 @@ def _inject_external_event(world: World, incident: DockIncident) -> None:
 
 
 def adjudicate_hour(world: World, *, external_events: Iterable[DockIncident] = ()) -> None:
+    advance_household_support(world)
     _adjudicate_food_need(world)
     for incident in external_events:
         _inject_external_event(world, incident)

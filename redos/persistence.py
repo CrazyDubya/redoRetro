@@ -26,7 +26,7 @@ from .market import TradeQuote
 from .model import World
 
 
-SNAPSHOT_SCHEMA_VERSION = 3
+SNAPSHOT_SCHEMA_VERSION = 4
 _T = TypeVar("_T")
 _MODEL_TYPES = {
     cls.__name__: cls
@@ -37,7 +37,9 @@ _MODEL_TYPES[Recipe.__name__] = Recipe
 _MODEL_TYPES[TradeQuote.__name__] = TradeQuote
 _WORLD_FIELDS = frozenset(vars(World()).keys())
 _COMMUNITY_FIELDS = frozenset({"social_ties", "institutions", "institutional_rules"})
-_M3_WORLD_FIELDS = _WORLD_FIELDS - _COMMUNITY_FIELDS
+_SUPPORT_FIELDS = frozenset({"support_duties", "obligations"})
+_SCHEMA3_WORLD_FIELDS = _WORLD_FIELDS - _SUPPORT_FIELDS
+_M3_WORLD_FIELDS = _SCHEMA3_WORLD_FIELDS - _COMMUNITY_FIELDS
 
 
 @dataclass(frozen=True)
@@ -314,7 +316,7 @@ def load_snapshot(path: str | Path, *, snapshot_id: str = "latest") -> World:
         connection.close()
     if row is None:
         raise KeyError(f"snapshot {snapshot_id!r} not found")
-    if row["schema_version"] not in {2, SNAPSHOT_SCHEMA_VERSION}:
+    if row["schema_version"] not in {2, 3, SNAPSHOT_SCHEMA_VERSION}:
         raise ValueError(f"unsupported snapshot schema {row['schema_version']}")
     payload = bytes(row["payload"])
     if hashlib.sha256(payload).hexdigest() != row["checksum"]:
@@ -343,24 +345,34 @@ def load_snapshot(path: str | Path, *, snapshot_id: str = "latest") -> World:
 
 
 def migrate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
-    """Migrate frozen M3 schema 2 to 3 without changing its simulation state.
+    """Migrate frozen M3 schema 2 and M4.1 schema 3 to the current format.
 
-    The migration is in memory; a successful subsequent Save writes schema 3.
+    The migration is in memory; a subsequent Save writes the current schema.
     Loading never rewrites the user's snapshot or its durable command ledger.
     """
     if document.get("schema_version") == SNAPSHOT_SCHEMA_VERSION:
         return document
-    if document.get("format") != "redos.world" or document.get("schema_version") != 2:
+    if document.get("format") != "redos.world" or document.get("schema_version") not in {2, 3}:
         raise ValueError("unsupported snapshot migration")
     encoded_world = document.get("world")
     if not isinstance(encoded_world, dict) or encoded_world.get("$type") != "World":
         raise ValueError("invalid M3 World snapshot")
     fields_data = encoded_world.get("fields")
-    if not isinstance(fields_data, dict) or set(fields_data) != _M3_WORLD_FIELDS:
-        raise ValueError("M3 snapshot World fields do not match frozen schema 2")
+    expected = _M3_WORLD_FIELDS if document["schema_version"] == 2 else _SCHEMA3_WORLD_FIELDS
+    if not isinstance(fields_data, dict) or set(fields_data) != expected:
+        raise ValueError(f"snapshot World fields do not match frozen schema {document['schema_version']}")
     migrated = copy.deepcopy(document)
-    for name in sorted(_COMMUNITY_FIELDS):
+    additions = _SUPPORT_FIELDS | (_COMMUNITY_FIELDS if document["schema_version"] == 2 else set())
+    for name in sorted(additions):
         migrated["world"]["fields"][name] = {"$type": "dict", "items": []}
+    encoded_households = migrated["world"]["fields"]["households"]
+    if not isinstance(encoded_households, dict) or encoded_households.get("$type") != "dict":
+        raise ValueError("invalid legacy households registry")
+    legacy_fields = {field.name for field in fields(model_module.Household)} - {"arrangement"}
+    for _key, household in encoded_households["items"]:
+        if household.get("$type") != "Household" or set(household.get("fields", {})) != legacy_fields:
+            raise ValueError("invalid legacy household fields")
+        household["fields"]["arrangement"] = "unspecified"
     migrated["schema_version"] = SNAPSHOT_SCHEMA_VERSION
     return migrated
 

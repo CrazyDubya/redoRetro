@@ -1,6 +1,6 @@
 # Milestone 4 — The Living Community
 
-**Status:** Reviewed specification. M3 closure gate satisfied; implement M4.1 only, then stop for review before M4.2.
+**Status:** Reviewed specification. M3 closure gate satisfied. Execution of all M4 phases is authorized with iterative self-review, a focused PR per phase, and completed review before merge.
 **Baseline:** Frozen M3 `68643756ea1b36f9c8ba1cf87196d6f04b080245`; [M3 closure issue #32](https://github.com/CrazyDubya/redoRetro/issues/32) closed after reviewed PR #34 and passing main CI. See `docs/acceptance/milestone-3.md`.
 **Period and geography:** 1770, the existing bounded Lower Manhattan waterfront district and its already-modeled Brooklyn ferry/harbor connections.
 **Technical constraints:** Python 3.12-compatible, no Docker, SQLite, no mandatory runtime dependencies, vanilla HTML/CSS/JS, deterministic seed, one canonical `World`.
@@ -21,7 +21,7 @@ The testable change: a player can make and break a social/economic commitment, s
 6. **Historical care:** distinguish free labor, apprenticeship/indenture, and enslavement without treating coercion as a neutral employment choice. Historical legal standing and institutional access differ by person and jurisdiction; do not invent universal equal access or erase restrictions. Source and uncertainty metadata are required for historically specific rules.
 7. **Player agency:** the player is not autonomously redirected by NPC schedules, yet remains subject to the same travel, resources, obligations, access restrictions, and consequences.
 8. **No hidden migrations:** version every persisted schema addition; demonstrate loading a frozen M3 snapshot into M4 with an explicit migration or compatible decoder, never `pickle`.
-9. **Review gates:** one focused PR per phase, full regression suite, review before merge. Start with M4.1 only and stop for review.
+9. **Review gates:** one focused PR per phase, full regression suite, review before merge. Resolve each phase's findings before advancing to the next.
 
 ## 3. Bounded M4 scenario
 
@@ -49,13 +49,13 @@ Prefer extending existing `Household`, `Actor`, `Business`, `Employment`, and `O
 - Independently confirm M3 command tape, safe snapshot, 30-day streets, 90-day harbor, and no open P1/P2 correctness findings.
 - Record frozen M3 commit SHA and reproducible commands in `docs/acceptance/milestone-3.md`. Do not label M3 closed until these checks pass.
 
-### M4.1 — Provenance and institution/relationship schema (FIRST IMPLEMENTATION PR; STOP AFTER REVIEW)
+### M4.1 — Provenance and institution/relationship schema
 - Commit `docs/history/1770-community-sources.md` with source, claim, confidence, geographic relevance and legal/temporal applicability.
 - Add only the minimum `SocialTie`, `Institution`, and typed institutional rule records to the canonical model. Explicit invariants, no duplicate IDs, valid references, temporal validity.
 - Add snapshot schema migration from frozen M3 and deterministic round-trip/replay tests.
 - Add a tiny fixture with two institutions and six situated people/relationships. **No autonomous institutional decisions or new UI yet.**
 - Acceptance: M3 fixture loads and produces identical next 24h behavior; invalid relationships and institutional memberships reject atomically; existing tests green.
-- **STOP; request review and approval for M4.2.**
+- Complete review and resolve findings before M4.2.
 
 ### M4.2 — Household obligations and social continuity
 - Establish documented household membership changes, support duties, and shared resources. Model consequences for shortage, dependency, and changes of residence through existing economic kernels.
@@ -102,7 +102,7 @@ No whole-Manhattan expansion, new map engine, national politics, election or Rev
 ## 7. Agent instructions and gate discipline
 
 1. **Do not start M4 code until M3 issue #32 is closed and the M3 acceptance document records a reviewed freeze SHA.**
-2. Once authorized, implement **M4.1 only** on a focused branch/PR. Show schema, migrations, source ledger, invariants, and test results. Stop.
+2. Implement one phase at a time on a focused branch/PR. Show schema, migrations, source ledger, invariants, and test results. Complete review and resolve findings before merging and proceeding.
 3. Preserve old tests and public APIs where practical; avoid compatibility shims for features that never shipped, but preserve M3 saved-game data as required.
 4. Never mark a phase complete from documentation alone; point to executed tests, commit SHA, and review outcome.
 5. Any material historical uncertainty is documented as a bounded assumption rather than asserted as fact.

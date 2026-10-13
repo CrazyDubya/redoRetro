@@ -236,7 +236,7 @@ def _debit_credit(world: World, buyer_id: str, seller_id: str, amount: float, *,
     world.pay(buyer_id, seller_id, amount, causes=causes, reason="market transaction payment")
 
 
-def buy(world: World, buyer_id: str, market_id: str, good_type_id: str, quantity: float, *, offer: float | None = None) -> TradeQuote:
+def buy(world: World, buyer_id: str, market_id: str, good_type_id: str, quantity: float, *, offer: float | None = None, causes: Iterable[str] = ()) -> TradeQuote:
     require_finite(quantity, "market purchase quantity")
     if quantity <= 0:
         raise ValueError("market purchase quantity must be positive")
@@ -266,7 +266,7 @@ def buy(world: World, buyer_id: str, market_id: str, good_type_id: str, quantity
     if unit_price <= 0 or unit_price > target * 1.25:
         raise ValueError("market rejected the purchase offer")
     quote_obj = TradeQuote(market_id, good_type_id, quantity, unit_price, "buy")
-    payment = world.pay(buyer_id, place_id if place_id in world.businesses else _market_cashier(world, place_id), quote_obj.total, reason="purchase at market")
+    payment = world.pay(buyer_id, place_id if place_id in world.businesses else _market_cashier(world, place_id), quote_obj.total, causes=causes, reason="purchase at market")
     world.transfer_goods(good_type_id, quantity, from_holder=place_id, to_holder=buyer_id, to_owner=buyer_id, causes=[payment.id], reason="goods bought at market")
     market.balances[good_type_id] = world.quantity_held(place_id, good_type_id)
     world.record("trade", f"{buyer_id} bought {quantity} {good_type_id}", actors=[buyer_id], entities=[market_id, good_type_id], causes=[payment.id], data={"quantity": quantity, "unit_price": unit_price})
