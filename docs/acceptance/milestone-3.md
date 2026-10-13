@@ -1,5 +1,23 @@
 # Milestone 3 — The Living Streets
 
+## Formal closure
+
+Accepted and frozen on October 12, 2026 at
+`68643756ea1b36f9c8ba1cf87196d6f04b080245`, the merge of
+[PR #34](https://github.com/CrazyDubya/redoRetro/pull/34).
+The independent source and CI review supplied on October 12 reported no
+findings in the corrective diff. [Issue #32](https://github.com/CrazyDubya/redoRetro/issues/32)
+is closed. The merged main branch passed Ruff and the complete pytest suite in
+[Actions run 38340196317](https://github.com/CrazyDubya/redoRetro/actions/runs/38340196317).
+This is source-review and automated-test acceptance, not a claim of an
+independent reviewer executing the simulation locally.
+
+Reproduce on the frozen commit with `python -m pip install -e .`,
+`python -m pip install pytest ruff==0.13.1`, `ruff check redos tests`, and
+`python -m pytest -q`. The full suite includes the 30-day Living Streets run,
+90-day harbor acceptance, persistence replay, shared actions, and failure/retry
+regressions. Future schema changes must preserve saved worlds from this commit.
+
 ## M3.1 baseline
 
 The first M3 slice installs a bounded, directly traversable Lower Manhattan
