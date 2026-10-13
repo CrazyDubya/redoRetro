@@ -1,7 +1,7 @@
 # Milestone 4 — The Living Community
 
-**Status:** Proposed specification, planning only. **Do not implement or merge until Milestone 3 is formally accepted and frozen.**
-**Baseline:** M3 `5d126c5a64ec22bbd18f8971948726aa78e25854` (pending [M3 closure issue #32](https://github.com/CrazyDubya/redoRetro/issues/32)).
+**Status:** Reviewed specification. M3 closure gate satisfied; implement M4.1 only, then stop for review before M4.2.
+**Baseline:** Frozen M3 `68643756ea1b36f9c8ba1cf87196d6f04b080245`; [M3 closure issue #32](https://github.com/CrazyDubya/redoRetro/issues/32) closed after reviewed PR #34 and passing main CI. See `docs/acceptance/milestone-3.md`.
 **Period and geography:** 1770, the existing bounded Lower Manhattan waterfront district and its already-modeled Brooklyn ferry/harbor connections.
 **Technical constraints:** Python 3.12-compatible, no Docker, SQLite, no mandatory runtime dependencies, vanilla HTML/CSS/JS, deterministic seed, one canonical `World`.
 
