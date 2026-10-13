@@ -8,14 +8,48 @@ from pathlib import Path
 import unittest
 
 from redos.audit import conservation_errors, money_totals, validate_world
+from redos.actions import move
 from redos.community_fixture import build_household_world
-from redos.households import advance_household_support, cancel_support, change_household_membership, change_household_residence, settle_obligation
+from redos.households import advance_household_support, cancel_support, change_household_membership, change_household_residence, recover_household_goods, settle_obligation
+from redos.market import buy
 from redos.model import Obligation
 from redos.persistence import _payload_for, load_snapshot, save_snapshot
 from redos.runtime import advance_world, run
 
 
 class HouseholdObligationTests(unittest.TestCase):
+    def test_relocation_from_market_preserves_private_stock_and_physical_recovery(self) -> None:
+        world = build_household_world(seed=91).world
+        household = world.households["merchant-household"]
+        change_household_residence(world, household.id, "shop")
+        lot = world.create_lot("metals", 2.0, holder_id=household.id, owner_id=household.id)
+        public_before = world.quantity_held("shop", "metals")
+        change_household_residence(world, household.id, "home-a")
+        self.assertEqual(world.quantity_held("shop", "metals"), public_before)
+        self.assertEqual(world.markets["shop-market"].balances["metals"], public_before)
+        self.assertEqual(world.location_of(lot.holder_id), "shop")
+        self.assertNotEqual(lot.holder_id, "shop")
+        buy(world, "merchant", "shop-market", "metals", 1)
+        self.assertEqual(lot.quantity, 2.0)
+        world.move_actor("citizen-8", "shop", reason="fixture stranger is co-located with storage")
+        before = _payload_for(world)
+        with self.assertRaises(PermissionError):
+            recover_household_goods(world, "citizen-8", lot.holder_id, "metals", 1)
+        self.assertEqual(_payload_for(world), before)
+        move(world, "merchant", "wall-street")
+        before = _payload_for(world)
+        with self.assertRaisesRegex(ValueError, "stationary co-location"):
+            recover_household_goods(world, "merchant", lot.holder_id, "metals", 1)
+        self.assertEqual(_payload_for(world), before)
+        advance_world(world, 1)
+        move(world, "merchant", "shop")
+        advance_world(world, 1)
+        recovered = recover_household_goods(world, "merchant", lot.holder_id, "metals", 1)
+        self.assertEqual(lot.quantity, 1.0)
+        self.assertTrue(all(world.lots[lot_id].owner_id == household.id for lot_id in recovered))
+        self.assertIn("household_residence_changed", {event.kind for event in world.explain(world.events[-1].id)})
+        self.assertEqual(validate_world(world), [])
+        self.assertEqual(conservation_errors(world), [])
     def test_cancellation_preserves_unprocessed_past_periods_and_rejects_duplicates(self) -> None:
         world = build_household_world(seed=88).world
         duty = world.support_duties["household-support"]

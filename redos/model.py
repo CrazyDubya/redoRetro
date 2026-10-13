@@ -812,6 +812,8 @@ class World:
             return holder_id
         if holder_id in self.households:
             return self.households[holder_id].residence_id
+        if holder_id in self.situated_objects:
+            return self.situated_objects[holder_id].place_id
         if holder_id in self.transport_assets:
             return self.transport_assets[holder_id].location_id
         if holder_id in self.shipments:
@@ -1034,6 +1036,7 @@ class World:
             or holder_id in self.households
             or holder_id in self.shipments
             or holder_id in self.transport_assets
+            or holder_id in self.situated_objects
         )
 
     def _sync_market_balances(self, place_id: str) -> None:

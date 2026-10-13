@@ -79,7 +79,8 @@ attached to the original parties. Pooled resources finance an ordinary
 shopper only while co-located at home. Purchase, delivery and consumption
 retain a chain back to the support payment, including the actual consumed
 lots. Membership and residence transitions retain history; changing residence
-leaves possessions physically at the previous home and redirects future
+leaves possessions in a private situated custodian at the previous home (not
+public market stock) and redirects future
 home schedules without relocating a person.
 
 Schema 4 adds support duties, obligations and the household arrangement field.

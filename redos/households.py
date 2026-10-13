@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import timedelta
 
 from .community import _ids, _interval, validate_new_community_id
-from .model import Obligation, World, require_finite
+from .model import Obligation, SituatedObject, World, require_finite
 
 
 HOUSEHOLD_ARRANGEMENTS = {"unspecified", "wage_dependent", "independent_tradesperson", "dependent_extended"}
@@ -211,10 +211,22 @@ def change_household_residence(world: World, household_id: str, place_id: str, *
     for lot in lots:
         if not world._lot_is_available_at(lot, old_place):
             raise ValueError("household possessions are encumbered")
+    storage_id = f"household-storage:{household.id}:{old_place}"
+    storage = world.situated_objects.get(storage_id)
+    if lots:
+        if storage is not None:
+            if storage.owner_id != household.id or storage.place_id != old_place or not storage.state.get("household_storage"):
+                raise ValueError("household storage custodian does not match")
+        else:
+            validate_new_community_id(world, storage_id)
+            storage = SituatedObject(storage_id, f"{household.name} stored possessions", old_place,
+                                     owner_id=household.id, state={"household_storage": True})
+    if lots and storage_id not in world.situated_objects:
+        world.add(storage)
     event = world.record("household_residence_changed", f"{household_id} changed residence", entities=[household_id, old_place, place_id],
-                         causes=causes, data={"from": old_place, "to": place_id})
+                         causes=causes, data={"from": old_place, "to": place_id, "storage_id": storage_id if lots else None})
     for lot in lots:
-        lot.holder_id = old_place
+        lot.holder_id = storage_id
         lot.provenance = (*lot.provenance, event.id)
     household.residence_id = place_id
     for member_id in household.members:
@@ -224,6 +236,32 @@ def change_household_residence(world: World, household_id: str, place_id: str, *
         if member.active_task == "return with food":
             member.task_target_location_id = place_id
     world._sync_market_balances(old_place)
+
+
+def recover_household_goods(world: World, actor_id: str, storage_id: str, good_type_id: str, quantity: float) -> tuple[str, ...]:
+    """A member physically retrieves private household possessions into custody."""
+    require_finite(quantity, "household retrieval quantity")
+    if quantity <= 0:
+        raise ValueError("retrieval quantity must be positive")
+    actor = world.actors[actor_id]
+    storage = world.situated_objects[storage_id]
+    if not storage.state.get("household_storage") or actor.household_id != storage.owner_id:
+        raise PermissionError("actor cannot retrieve this household's private possessions")
+    if actor.traveling_to is not None or actor.location_id != storage.place_id:
+        raise ValueError("household retrieval requires stationary co-location")
+    known_events = {event.id for event in world.events}
+    causes: list[str] = []
+    remaining = quantity
+    for lot in world.available_owned_lots_at(storage.owner_id, storage.place_id, good_type_id, from_holder_id=storage.id):
+        causes.extend(reference for reference in lot.provenance if reference in known_events)
+        remaining -= lot.quantity
+        if remaining <= 1e-9:
+            break
+    moved = world.transfer_owned_goods_at(storage.owner_id, storage.place_id, good_type_id, quantity,
+                                         from_holder_id=storage.id, to_holder=actor.id,
+                                         causes=tuple(dict.fromkeys(causes)),
+                                         reason="member retrieved household possessions")
+    return tuple(lot.id for lot in moved)
 
 
 def fund_household_shopper(world: World, actor_id: str, cost: float) -> bool:

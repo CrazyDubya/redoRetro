@@ -102,6 +102,9 @@ def validate_world(world: World) -> list[str]:
             world.location_of(lot.holder_id)
         except KeyError:
             errors.append(f"lot {lot.id} has unknown holder {lot.holder_id}")
+    for obj in world.situated_objects.values():
+        if obj.place_id not in world.places:
+            errors.append(f"object {obj.id} has unknown place {obj.place_id}")
     for actor in world.actors.values():
         if actor.health <= 0:
             errors.append(f"actor {actor.id} is unhealthy")
