@@ -10,14 +10,59 @@ import unittest
 from redos.audit import conservation_errors, money_totals, validate_world
 from redos.actions import move
 from redos.community_fixture import build_household_world
-from redos.households import advance_household_support, cancel_support, change_household_membership, change_household_residence, recover_household_goods, settle_obligation
-from redos.market import buy
+from redos.households import advance_household_support, cancel_support, change_household_membership, change_household_residence, fund_household_shopper, recover_household_goods, settle_obligation
+from redos.market import buy, quote
 from redos.model import Obligation
 from redos.persistence import _payload_for, load_snapshot, save_snapshot
-from redos.runtime import advance_world, run
+from redos.runtime import _complete_food_task, advance_world, run
 
 
 class HouseholdObligationTests(unittest.TestCase):
+    def test_shopper_uses_household_funds_for_arrival_price(self) -> None:
+        world = build_household_world(seed=92).world
+        actor = world.actors["citizen-8"]
+        household = world.households[actor.household_id]
+        world.pay("warehouse-business", household.id, 100)
+        world.move_actor(actor.id, household.residence_id, reason="fixture shopper starts at home")
+        if actor.money:
+            world.pay(actor.id, household.id, actor.money)
+        initial = quote(world, "shop-market", "bread", 1, side="buy").total
+        self.assertTrue(fund_household_shopper(world, actor.id, initial))
+        world.markets["shop-market"].demand_backlog["bread"] = 100
+        arrival = quote(world, "shop-market", "bread", 1, side="buy").total
+        self.assertGreater(arrival, initial)
+        world.move_actor(actor.id, "shop", reason="fixture shopper arrived after price changed")
+        actor.active_task = "acquire food"
+        cash_before = money_totals(world)["total"]
+        _complete_food_task(world, actor)
+        self.assertEqual(actor.active_task, "return with food")
+        self.assertEqual(world.quantity_held(actor.id, "bread"), 1)
+        trade = next(event for event in reversed(world.events) if event.kind == "trade")
+        self.assertEqual(trade.data["unit_price"], arrival)
+        self.assertEqual(len([event for event in world.explain(trade.id) if event.description == "household food acquisition allowance"]), 2)
+        self.assertAlmostEqual(money_totals(world)["total"], cash_before)
+
+    def test_delivery_follows_older_actual_lot_not_latest_purchase(self) -> None:
+        world = build_household_world(seed=93).world
+        actor = world.actors["citizen-8"]
+        household = world.households[actor.household_id]
+        world.pay("warehouse-business", actor.id, 100)
+        world.move_actor(actor.id, "shop", reason="fixture shopper can purchase")
+        buy(world, actor.id, "shop-market", "bread", 1)
+        first_payment = next(event for event in reversed(world.events) if event.kind == "payment")
+        first_transfer = next(event for event in reversed(world.events) if event.kind == "goods_transfer")
+        buy(world, actor.id, "shop-market", "bread", 1)
+        second_payment = next(event for event in reversed(world.events) if event.kind == "payment")
+        world.move_actor(actor.id, household.residence_id, reason="fixture shopper arrived home")
+        actor.active_task = "return with food"
+        _complete_food_task(world, actor)
+        delivery = next(event for event in reversed(world.events) if event.description == "shopper delivered food home")
+        explained = {event.id for event in world.explain(delivery.id)}
+        self.assertIn(first_transfer.id, explained)
+        self.assertIn(first_payment.id, explained)
+        self.assertNotIn(second_payment.id, explained)
+        self.assertEqual(conservation_errors(world), [])
+
     def test_relocation_from_market_preserves_private_stock_and_physical_recovery(self) -> None:
         world = build_household_world(seed=91).world
         household = world.households["merchant-household"]

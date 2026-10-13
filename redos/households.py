@@ -273,17 +273,20 @@ def fund_household_shopper(world: World, actor_id: str, cost: float) -> bool:
     if actor.money >= cost:
         return True
     needed = cost - actor.money
-    if household.cash < needed or actor.traveling_to is not None or actor.location_id != household.residence_id:
+    at_authorized_purchase = (actor.active_task == "acquire food"
+                              and actor.location_id == world.runtime.get("food_market_place", "shop"))
+    if household.cash < needed or actor.traveling_to is not None or not (actor.location_id == household.residence_id or at_authorized_purchase):
         return False
     causes = tuple(event.id for event in reversed(world.events)
                    if event.kind == "obligation_payment" and household.id in event.actors)[:1]
     allowance = world.pay(household.id, actor.id, needed, causes=causes, reason="household food acquisition allowance")
-    world.runtime.setdefault("_household_shopping_causes", {})[actor.id] = (allowance.id,)
+    funding = world.runtime.setdefault("_household_shopping_causes", {})
+    funding[actor.id] = (*funding.get(actor.id, ()), allowance.id)
     return True
 
 
 def household_food_evidence(world: World, household_id: str, quantity: float) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Select actual meal lots and the transfer events that supplied those lots."""
+    """Select a holder's actual bread lots and their supplying transfer events."""
     selected: list[str] = []
     causes: list[str] = []
     remaining = quantity

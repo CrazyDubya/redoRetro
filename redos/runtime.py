@@ -129,6 +129,9 @@ def _complete_food_task(world: World, actor: Actor) -> None:
         return
     if actor.location_id == world.runtime.get("food_market_place", "shop"):
         market_id = world.runtime.get("food_market_id", "shop-market")
+        if household.arrangement != "unspecified" and actor.active_task == "acquire food":
+            cost = quote(world, market_id, "bread", 1, side="buy").total
+            fund_household_shopper(world, actor.id, cost)
         if actor.money > 0:
             try:
                 buy(world, actor.id, market_id, "bread", 1, causes=world.runtime.get("_household_shopping_causes", {}).get(actor.id, ()))
@@ -148,8 +151,7 @@ def _complete_food_task(world: World, actor: Actor) -> None:
         return
     if actor.active_task == "return with food" and actor.location_id == household.residence_id:
         if world.quantity_held(actor.id, "bread") >= 1:
-            purchase_causes = tuple(event.id for event in reversed(world.events)
-                                    if event.kind == "trade" and actor.id in event.actors and "bread" in event.entities)[:1] if household.arrangement != "unspecified" else ()
+            purchase_causes = household_food_evidence(world, actor.id, 1)[1] if household.arrangement != "unspecified" else ()
             world.transfer_goods(
                 "bread",
                 1,
