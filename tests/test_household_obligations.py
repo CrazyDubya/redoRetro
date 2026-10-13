@@ -16,6 +16,51 @@ from redos.runtime import advance_world, run
 
 
 class HouseholdObligationTests(unittest.TestCase):
+    def test_cancellation_preserves_unprocessed_past_periods_and_rejects_duplicates(self) -> None:
+        world = build_household_world(seed=88).world
+        duty = world.support_duties["household-support"]
+        first_due = duty.next_due_at
+        world.advance_hours(48)
+        cancel_support(world, duty.id)
+        self.assertEqual(len(world.obligations), 3)
+        self.assertEqual({o.due_at for o in world.obligations.values()}, {first_due + timedelta(hours=24*i) for i in range(3)})
+        advance_household_support(world)
+        self.assertTrue(all(o.status == "settled" for o in world.obligations.values()))
+        before = _payload_for(world)
+        with self.assertRaises(ValueError):
+            world.add(Obligation("duplicate-period", duty.supporter_id, duty.household_id,
+                                 duty.jurisdiction_place_id, duty.amount, first_due, duty.id))
+        self.assertEqual(_payload_for(world), before)
+
+    def test_direct_registration_cannot_charge_a_period_twice(self) -> None:
+        world = build_household_world(seed=90).world
+        duty = world.support_duties["household-support"]
+        obligation = Obligation(f"support:{duty.id}:{duty.next_due_at.isoformat()}", duty.supporter_id,
+                                duty.household_id, duty.jurisdiction_place_id, duty.amount, duty.next_due_at, duty.id)
+        world.add(obligation)
+        before = _payload_for(world)
+        with self.assertRaisesRegex(ValueError, "canonical obligation ID"):
+            world.add(Obligation("second-record-same-period", duty.supporter_id, duty.household_id,
+                                 duty.jurisdiction_place_id, duty.amount, duty.next_due_at, duty.id))
+        self.assertEqual(_payload_for(world), before)
+        previous_cash = world.actors[duty.supporter_id].money
+        advance_household_support(world)
+        self.assertEqual(len(world.obligations), 1)
+        self.assertEqual(previous_cash - world.actors[duty.supporter_id].money, duty.amount)
+
+    def test_future_support_obligation_ids_cannot_be_claimed_by_other_records(self) -> None:
+        from dataclasses import replace
+        from redos.model import Actor
+
+        world = build_household_world(seed=89).world
+        tie = next(iter(world.social_ties.values()))
+        future_id = "support:household-support:1770-01-02T00:00:00"
+        before = _payload_for(world)
+        for candidate in (replace(tie, id=future_id), Actor(future_id, "Conflicting actor", "shop")):
+            with self.assertRaisesRegex(ValueError, "reserved"):
+                world.add(candidate)
+            self.assertEqual(_payload_for(world), before)
+
     def test_actual_schema3_snapshot_preserves_next_day_after_migration(self) -> None:
         fixture = Path(__file__).parent / "fixtures" / "m4-schema3.sqlite3.gz"
         with tempfile.TemporaryDirectory() as directory:

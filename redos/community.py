@@ -147,9 +147,11 @@ def validate_community_entity(world: World, entity: SocialTie | Institution | In
         _ids(entity.causal_event_ids, {event.id: event for event in world.events}, "support evidence")
 
 
-def validate_new_community_id(world: World, record_id: str) -> None:
+def validate_new_community_id(world: World, record_id: str, *, support_obligation: bool = False) -> None:
     if not isinstance(record_id, str) or not record_id or GENERATED_ID.fullmatch(record_id):
         raise ValueError("record ID is empty or reserved")
+    if record_id.startswith("support:") and not support_obligation:
+        raise ValueError("record ID is reserved for support obligations")
     if any(
         record_id in collection for name, collection in vars(world).items()
         if isinstance(collection, dict) and not name.startswith("_")

@@ -73,7 +73,8 @@ No birth, death, descent or real person's genealogy is generated.
 
 An explicit support duty creates dated receivables. Default adds the owed
 amount to the existing debtor's debt once; payments transfer existing cash
-and retire the accounted debt. Cancelling future support leaves arrears
+and retire the accounted debt. Cancelling support materializes all periods
+already due, including the cancellation timestamp, and leaves arrears
 attached to the original parties. Pooled resources finance an ordinary
 shopper only while co-located at home. Purchase, delivery and consumption
 retain a chain back to the support payment, including the actual consumed

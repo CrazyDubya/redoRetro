@@ -39,6 +39,8 @@ def validate_obligation(world: World, obligation: Obligation) -> None:
     if obligation.due_at < source.starts_at or (source.ends_at is not None and obligation.due_at >= source.ends_at):
         raise ValueError("obligation deadline exceeds source interval")
     _interval(obligation.due_at, None, "obligation deadline")
+    if obligation.id != f"support:{source.id}:{obligation.due_at.isoformat()}":
+        raise ValueError("support period must use its canonical obligation ID")
     for value in (obligation.amount, obligation.paid, obligation.accounted_debt):
         require_finite(value, "obligation")
     if obligation.amount <= 0 or not 0 <= obligation.paid <= obligation.amount or not 0 <= obligation.accounted_debt <= obligation.amount - obligation.paid + 1e-9:
@@ -47,16 +49,22 @@ def validate_obligation(world: World, obligation: Obligation) -> None:
         raise ValueError("unknown obligation state")
     if obligation.status == "settled" and abs(obligation.paid - obligation.amount) > 1e-9:
         raise ValueError("settled obligation is not fully paid")
+    if obligation.status == "defaulted" and abs(obligation.accounted_debt - (obligation.amount - obligation.paid)) > 1e-9:
+        raise ValueError("defaulted obligation debt does not reconcile")
+    if obligation.status != "defaulted" and obligation.accounted_debt > 1e-9:
+        raise ValueError("only defaulted obligations may account for debt")
     _ids(obligation.causal_event_ids, {event.id: event for event in world.events}, "obligation causes")
 
 
 def register_obligation(world: World, obligation: Obligation) -> Obligation:
-    validate_new_community_id(world, obligation.id)
+    validate_new_community_id(world, obligation.id, support_obligation=True)
     validate_obligation(world, obligation)
     if obligation.status != "open" or obligation.paid != 0 or obligation.accounted_debt != 0:
         raise ValueError("new obligation must be unpaid and open")
     if world.support_duties[obligation.source_id].status != "active":
         raise ValueError("source duty cannot create new obligations")
+    if obligation.due_at != world.support_duties[obligation.source_id].next_due_at:
+        raise ValueError("obligation is not the next scheduled support period")
     world.obligations[obligation.id] = obligation
     event = world.record("obligation_created", f"{obligation.debtor_id} owes {obligation.creditor_id}",
                          actors=[obligation.debtor_id, obligation.creditor_id], entities=[obligation.id, obligation.source_id],
@@ -98,7 +106,7 @@ def settle_obligation(world: World, obligation_id: str, *, amount: float | None 
     return payment_amount
 
 
-def default_obligation(world: World, obligation_id: str) -> None:
+def default_obligation(world: World, obligation_id: str, *, reason: str = "unpaid at deadline") -> None:
     obligation = world.obligations[obligation_id]
     if obligation.status != "open":
         return
@@ -113,7 +121,7 @@ def default_obligation(world: World, obligation_id: str) -> None:
     obligation.status = "defaulted"
     event = world.record("obligation_defaulted", f"{obligation.debtor_id} missed {obligation.id}",
                          actors=[obligation.debtor_id, obligation.creditor_id], entities=[obligation.id, obligation.source_id],
-                         causes=obligation.causal_event_ids[-1:], data={"remaining": remaining})
+                         causes=obligation.causal_event_ids[-1:], data={"remaining": remaining, "reason": reason})
     obligation.causal_event_ids = (*obligation.causal_event_ids, event.id)
 
 
@@ -123,6 +131,9 @@ def cancel_support(world: World, duty_id: str) -> None:
         return
     if duty.status != "active":
         raise ValueError("support duty is not active")
+    # Due periods, including this exact timestamp, remain enforceable even
+    # when adjudication has not yet materialized those receivables.
+    _materialize_due_support(world, duty)
     duty.status = "cancelled"
     event = world.record("support_cancelled", f"future support cancelled for {duty_id}",
                          actors=[duty.supporter_id], entities=[duty.id, duty.household_id],
@@ -130,15 +141,19 @@ def cancel_support(world: World, duty_id: str) -> None:
     duty.causal_event_ids = (*duty.causal_event_ids, event.id)
 
 
+def _materialize_due_support(world: World, duty) -> None:
+    while duty.status == "active" and duty.next_due_at <= world.now and (duty.ends_at is None or duty.next_due_at < duty.ends_at):
+        obligation_id = f"support:{duty.id}:{duty.next_due_at.isoformat()}"
+        if obligation_id not in world.obligations:
+            world.add(Obligation(obligation_id, duty.supporter_id, duty.household_id,
+                                 duty.jurisdiction_place_id, duty.amount, duty.next_due_at, duty.id,
+                                 causal_event_ids=duty.causal_event_ids))
+        duty.next_due_at += timedelta(hours=duty.period_hours)
+
+
 def advance_household_support(world: World) -> None:
     for duty in world.support_duties.values():
-        while duty.status == "active" and duty.next_due_at <= world.now and (duty.ends_at is None or duty.next_due_at < duty.ends_at):
-            obligation_id = f"support:{duty.id}:{duty.next_due_at.isoformat()}"
-            if obligation_id not in world.obligations:
-                world.add(Obligation(obligation_id, duty.supporter_id, duty.household_id,
-                                     duty.jurisdiction_place_id, duty.amount, duty.next_due_at, duty.id,
-                                     causal_event_ids=duty.causal_event_ids))
-            duty.next_due_at += timedelta(hours=duty.period_hours)
+        _materialize_due_support(world, duty)
         if duty.status == "active" and duty.ends_at is not None and world.now >= duty.ends_at:
             duty.status = "expired"
             event = world.record("support_expired", f"{duty.id} reached its term", entities=[duty.id, duty.household_id],
@@ -149,8 +164,8 @@ def advance_household_support(world: World) -> None:
             continue
         try:
             settle_obligation(world, obligation.id)
-        except ValueError:
-            default_obligation(world, obligation.id)
+        except ValueError as exc:
+            default_obligation(world, obligation.id, reason=str(exc))
 
 
 def change_household_membership(world: World, actor_id: str, household_id: str, *, causes: tuple[str, ...] = ()) -> None:

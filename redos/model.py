@@ -758,6 +758,8 @@ class World:
         if collection is None:
             raise TypeError(f"unsupported world entity: {type(entity)!r}")
         key = entity.route_id if isinstance(entity, RouteCondition) else entity.id
+        if isinstance(key, str) and key.startswith("support:"):
+            raise ValueError("ID is reserved for support obligations")
         if any(key in registry for registry in (self.social_ties, self.institutions, self.institutional_rules, self.support_duties, self.obligations)):
             raise ValueError(f"ID {key} conflicts with a community record")
         collection[key] = entity
