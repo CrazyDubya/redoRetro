@@ -87,6 +87,8 @@ def money_conservation_errors(world: World, tolerance: float = 1e-6) -> list[str
 
 
 def validate_world(world: World) -> list[str]:
+    from .community import community_errors
+
     errors: list[str] = []
     if not math.isfinite(world.seed):
         errors.append("world seed is non-finite")
@@ -151,6 +153,7 @@ def validate_world(world: World) -> list[str]:
         if not all(math.isfinite(value) for value in values):
             errors.append(f"transport asset {asset.id} has non-finite values")
     errors.extend(market_balance_errors(world))
+    errors.extend(community_errors(world))
     return errors
 
 

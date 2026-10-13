@@ -128,6 +128,65 @@ class Household:
 
 
 @dataclass(frozen=True)
+class HistoricalProvenance:
+    """A scoped claim, rather than an assertion that all fixture details are fact."""
+
+    source_url: str
+    claim: str
+    geographic_scope: str
+    applies_from: datetime
+    applies_until: datetime | None
+    confidence: str
+    uncertainty: str
+
+
+@dataclass(frozen=True)
+class SocialTie:
+    id: str
+    actor_a_id: str
+    actor_b_id: str
+    kind: str
+    starts_at: datetime
+    ends_at: datetime | None
+    provenance: HistoricalProvenance
+    visibility: str = "private"
+    evidence_event_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class Institution:
+    """Situated records; resources remain with existing canonical holders."""
+
+    id: str
+    name: str
+    kind: str
+    place_id: str
+    jurisdiction_place_ids: tuple[str, ...]
+    member_actor_ids: tuple[str, ...]
+    official_actor_ids: tuple[str, ...]
+    starts_at: datetime
+    ends_at: datetime | None
+    provenance: HistoricalProvenance
+    capacity: int = 1
+    operating_hours: tuple[ScheduleEntry, ...] = ()
+    cash_holder_id: str | None = None
+    inventory_holder_id: str | None = None
+
+
+@dataclass(frozen=True)
+class InstitutionalRule:
+    """Typed requirements for later situated institutional actions."""
+
+    id: str
+    institution_id: str
+    action: str
+    requirement: str
+    starts_at: datetime
+    ends_at: datetime | None
+    provenance: HistoricalProvenance
+
+
+@dataclass(frozen=True)
 class BeliefRevision:
     """The evidence attached to one actor's current belief value."""
 
@@ -583,6 +642,9 @@ class World:
         self.lots: dict[str, InventoryLot] = {}
         self.households: dict[str, Household] = {}
         self.actors: dict[str, Actor] = {}
+        self.social_ties: dict[str, SocialTie] = {}
+        self.institutions: dict[str, Institution] = {}
+        self.institutional_rules: dict[str, InstitutionalRule] = {}
         self.businesses: dict[str, Business] = {}
         self.properties: dict[str, Property] = {}
         self.bank_accounts: dict[str, BankAccount] = {}
@@ -616,6 +678,10 @@ class World:
         self._statement_number = 0
 
     def add(self, entity: Any) -> Any:
+        if isinstance(entity, (SocialTie, Institution, InstitutionalRule)):
+            from .community import register_community_entity
+
+            return register_community_entity(self, entity)
         collection = {
             Place: self.places,
             Door: self.doors,
@@ -652,6 +718,8 @@ class World:
         if collection is None:
             raise TypeError(f"unsupported world entity: {type(entity)!r}")
         key = entity.route_id if isinstance(entity, RouteCondition) else entity.id
+        if any(key in registry for registry in (self.social_ties, self.institutions, self.institutional_rules)):
+            raise ValueError(f"ID {key} conflicts with a community record")
         collection[key] = entity
         if isinstance(entity, Household):
             for actor_id in entity.members:
