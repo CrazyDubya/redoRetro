@@ -21,6 +21,9 @@ TIE_KINDS = frozenset({"kin", "patronage", "work", "apprenticeship", "mutual_aid
 INSTITUTION_KINDS = frozenset({"civic", "congregation", "poor_relief", "trade"})
 RULE_ACTIONS = frozenset({"membership", "hearing", "relief", "gathering", "labor"})
 RULE_REQUIREMENTS = frozenset({"member", "official", "documented_evidence"})
+GENERATED_ID = re.compile(
+    r"(?:event|lot|movement|observation|statement|contract|shipment|reposition|bank-account|bank-loan|holding|trade|policy|claim)-\d+"
+)
 
 
 def _interval(start: datetime, end: datetime | None, label: str) -> None:
@@ -42,7 +45,7 @@ def validate_community_entity(world: World, entity: SocialTie | Institution | In
     """Preflight all references and bounds without mutating canonical state."""
     if not isinstance(entity.id, str) or not entity.id:
         raise ValueError("community ID must not be empty")
-    if re.fullmatch(r"(?:event|lot|movement|observation|statement)-\d+", entity.id):
+    if GENERATED_ID.fullmatch(entity.id):
         raise ValueError("community ID uses a reserved generated namespace")
     _interval(entity.starts_at, entity.ends_at, entity.id)
     provenance = entity.provenance

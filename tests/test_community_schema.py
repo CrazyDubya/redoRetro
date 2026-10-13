@@ -100,7 +100,12 @@ class CommunitySchemaTests(unittest.TestCase):
         world = build_community_world(seed=74).world
         tie = next(iter(world.social_ties.values()))
         before = _payload_for(world)
-        for reserved in (f"event-{world._event_number + 1}", f"event-{world._event_number + 100}", "lot-999", "movement-999"):
+        for reserved in (
+            f"event-{world._event_number + 1}", f"event-{world._event_number + 100}",
+            "lot-999", "movement-999", "observation-999", "statement-999",
+            f"contract-{world._event_number + 1}", f"shipment-{len(world.shipments) + 1}",
+            "reposition-999", "bank-account-999", "bank-loan-999", "holding-999", "trade-999", "policy-999", "claim-999",
+        ):
             with self.assertRaisesRegex(ValueError, "reserved"):
                 world.add(replace(tie, id=reserved))
             self.assertEqual(_payload_for(world), before)
